@@ -2,7 +2,16 @@ import { NextResponse } from 'next/server';
 const attempts = new Map<string, { count: number; until: number }>();
 export function guardRequest(request: Request, limit = 30) {
   const origin = request.headers.get('origin');
-  if (origin && origin !== new URL(request.url).origin) return NextResponse.json({error:'Cross-origin request rejected.'},{status:403});
+  if (origin) {
+    try {
+      const parsedOrigin = new URL(origin);
+      const forwardedHost = request.headers.get('x-forwarded-host')?.split(',')[0].trim();
+      const effectiveHost = (forwardedHost || request.headers.get('host') || new URL(request.url).host).toLowerCase();
+      const forwardedProtocol = request.headers.get('x-forwarded-proto')?.split(',')[0].trim();
+      const effectiveProtocol = forwardedProtocol ? `${forwardedProtocol.replace(/:$/, '')}:` : new URL(request.url).protocol;
+      if (parsedOrigin.host.toLowerCase() !== effectiveHost || parsedOrigin.protocol !== effectiveProtocol) return NextResponse.json({error:'Cross-origin request rejected.'},{status:403});
+    } catch { return NextResponse.json({error:'Cross-origin request rejected.'},{status:403}); }
+  }
   if (request.headers.get('sec-fetch-site') === 'cross-site') return NextResponse.json({error:'Cross-site request rejected.'},{status:403});
   const size = Number(request.headers.get('content-length') || 0);
   if (size > 21 * 1024 * 1024) return NextResponse.json({error:'Request too large.'},{status:413});

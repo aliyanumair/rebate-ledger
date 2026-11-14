@@ -94,9 +94,21 @@ try {
     await check('Valid intake persists across production-server restart',async()=>{
       const r=await request('/api/intake',{method:'POST',body:intake(contract,csv)});assert.equal(r.status,201);
       const created=await r.json();const id=created.intake.id;assert.ok(id);
+      const form=new FormData();
+      form.set('supplier','Synthetic HVAC');
+      form.set('rules',JSON.stringify({supplierName:'Synthetic HVAC',programName:'Restart persistence test',verification:{status:'verified',verifiedBy:'QA reviewer',ruleVersion:'restart-v1'},tiers:[{minSpend:'0',ratePercent:'2',mode:'retroactive',citation:'Clause 2'}],eligibleSkus:['K-1'],clauseCitations:['Clause 2']}));
+      form.set('mapping',JSON.stringify({date:'Date',sku:'SKU',qty:'Qty',extended_cost:'Extended Cost',txn_type:'Txn Type',invoice_id:'Invoice'}));
+      form.set('payments',JSON.stringify([{scope:'program',amount:'1.00'}]));
+      form.set('csv',new Blob(['Date,SKU,Qty,Extended Cost,Txn Type,Invoice\n2026-07-01,K-1,1,100.00,PURCHASE,INV-RESTART-1'],{type:'text/csv'}),'audit.csv');
+      form.set('contract',new Blob([contract],{type:'application/pdf'}),'agreement.pdf');
+      const calculated=await request('/api/reconcile',{method:'POST',headers:headers(controller),body:form});assert.equal(calculated.status,200);
+      const audit=await calculated.json();assert.equal(audit.result.totals.unclaimedRecoveryFound,'1.00');
       await stop();launch();await ready();const freshAdmin=await login('admin@rebateledger.com',adminPassword);
       const queue=await request('/api/audits',{headers:headers(freshAdmin)});assert.equal(queue.status,200);assert.ok((await queue.json()).audits.some(item=>item.id===id));
       const file=await request(`/api/intakes/${id}/files/pdf`,{headers:headers(freshAdmin)});assert.equal(file.status,200);assert.deepEqual(Buffer.from(await file.arrayBuffer()),contract);
+      const persisted=await request(`/api/audits/${audit.auditId}`,{headers:headers(freshAdmin)});assert.equal(persisted.status,200);assert.equal((await persisted.json()).result.totals.unclaimedRecoveryFound,'1.00');
+      const workbook=await request(`/api/audits/${audit.auditId}/exports/xlsx`,{headers:headers(freshAdmin)});assert.equal(workbook.status,200);
+      const pdf=await request(`/api/audits/${audit.auditId}/exports/dispute`,{headers:headers(freshAdmin)});assert.equal(pdf.status,200);
     });
   }
   await check('Admin queue remains reachable after malformed inputs',async()=>{const current=external?admin:await login('admin@rebateledger.com',adminPassword);assert.equal((await request('/api/audits',{headers:headers(current)})).status,200);});

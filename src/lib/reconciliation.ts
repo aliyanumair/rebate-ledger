@@ -38,6 +38,8 @@ export interface RebateTier {
 export interface SpaRule {
   sku: string;
   supportedPrice: number | string;
+  /** Stack volume rebate only when the verified agreement explicitly permits it. Defaults to non-stackable. */
+  stackWithVolumeRebate?: boolean;
   /** Standard price is used when the transaction has no unit cost. */
   standardPrice?: number | string;
   approvedCustomers?: string[];
@@ -143,6 +145,10 @@ export interface ReconciliationResult {
     rebateEarned: string;
     spaEarned: string;
     supplierPaid: string;
+    /** Program-scope credits retained at aggregate level; never allocated to invented invoice lines. */
+    unallocatedProgramPayment: string;
+    unallocatedProgramPaymentReferences: string[];
+    programStatementProvided: boolean;
     unclaimedRecoveryFound: string;
     quarterEndTierOpportunity: string;
     transactionCount: number;
@@ -261,7 +267,7 @@ export function validateReconciliationRules(rules: ReconciliationRules): void {
     thresholds.add(floor.toString());
   }
   for (const spa of rules.spas ?? []) {
-    if (!normalizeSku(spa.sku) || !spa.citation?.trim() || asDecimal(spa.supportedPrice).lt(0) || (spa.standardPrice !== undefined && asDecimal(spa.standardPrice).lt(0))) throw new Error("SPA rules require SKU, nonnegative exact prices, and a citation.");
+    if (!normalizeSku(spa.sku) || !spa.citation?.trim() || asDecimal(spa.supportedPrice).lt(0) || (spa.standardPrice !== undefined && asDecimal(spa.standardPrice).lt(0)) || (spa.stackWithVolumeRebate !== undefined && typeof spa.stackWithVolumeRebate !== "boolean")) throw new Error("SPA rules require SKU, nonnegative exact prices, a citation, and an explicit boolean stacking choice when specified.");
   }
 }
 
@@ -290,6 +296,8 @@ export function reconcile(
   const spaMap = new Map((rules.spas ?? []).map((s) => [normalizeSku(s.sku), s]));
   const classified = transactions.map((tx) => {
     const sku = normalizeSku(tx.sku);
+    const spa = spaMap.get(sku);
+    const customerOk = !spa?.approvedCustomers?.length || spa.approvedCustomers.some((n) => n.toLowerCase() === (tx.customerName ?? "").toLowerCase());
     const rawSpend = money(tx.extendedCost);
     const qty = asDecimal(tx.qty);
     let classification: Classification;
@@ -304,7 +312,7 @@ export function reconcile(
     } else if (excluded.has(sku) || (rules.excludedSkuPrefixes ?? []).some((p) => sku.startsWith(normalizeSku(p)))) {
       classification = "EXCLUDED_NON_QUALIFYING_SKU";
       notes = "SKU is listed as excluded by the program.";
-    } else if (eligible.size > 0 && !eligible.has(sku) && !spaMap.has(sku)) {
+    } else if (eligible.size > 0 && !eligible.has(sku) && !(spa && customerOk)) {
       classification = "UNMATCHED_SKU_NEEDS_REVIEW";
       notes = "SKU did not match an eligible SKU rule after normalization.";
     } else if (rawSpend.lt(0)) {
@@ -314,8 +322,10 @@ export function reconcile(
       classification = "ELIGIBLE_VERIFIED";
       net = rawSpend;
     }
-    const spa = spaMap.get(sku);
-    const customerOk = !spa?.approvedCustomers?.length || spa.approvedCustomers.some((n) => n.toLowerCase() === (tx.customerName ?? "").toLowerCase());
+    if (classification === "ELIGIBLE_VERIFIED" && spa && customerOk && spa.stackWithVolumeRebate !== true) {
+      net = new Decimal(0);
+      notes = "Verified SPA benefit is non-stackable with the volume rebate; this line is excluded from volume-tier spend.";
+    }
     const standard = spa?.standardPrice === undefined ? asDecimal(tx.unitCost) : asDecimal(spa.standardPrice);
     const spaEarned = spa && customerOk && classification === "ELIGIBLE_VERIFIED"
       ? money(Decimal.max(standard.minus(asDecimal(spa.supportedPrice)), 0).mul(qty))
@@ -334,6 +344,8 @@ export function reconcile(
   const invoicePayments = new Map<string, Decimal>();
   const skuPayments = new Map<string, Decimal>();
   let programPayment = new Decimal(0);
+  let programStatementProvided = false;
+  const programPaymentReferences: string[] = [];
   for (const payment of payments) {
     const amount = money(payment.amount);
     if (amount.lt(0)) throw new Error("Negative supplier credits require an explicit adjustment policy.");
@@ -344,7 +356,11 @@ export function reconcile(
     else if (scope === "sku" && payment.sku) {
       const key = normalizeSku(payment.sku);
       skuPayments.set(key, (skuPayments.get(key) ?? new Decimal(0)).plus(amount));
-    } else if (scope === "program") programPayment = programPayment.plus(amount);
+    } else if (scope === "program") {
+      programStatementProvided = true;
+      programPayment = programPayment.plus(amount);
+      if (payment.reference?.trim()) programPaymentReferences.push(payment.reference.trim());
+    }
   }
   const expectedByTxn = new Map(classified.map((r) => [r.tx.txnId, (rebateByTxn.get(r.tx.txnId) ?? new Decimal(0)).plus(r.spaEarned)]));
   const weightedAllocate = (amount: Decimal, rows: typeof classified) => {
@@ -354,12 +370,13 @@ export function reconcile(
   };
   for (const [invoice, amount] of invoicePayments) weightedAllocate(amount, classified.filter((r) => r.tx.invoiceId === invoice));
   for (const [sku, amount] of skuPayments) weightedAllocate(amount, classified.filter((r) => r.sku === sku));
-  if (programPayment.gt(0)) weightedAllocate(programPayment, classified.filter((r) => (expectedByTxn.get(r.tx.txnId) ?? new Decimal(0)).gt(0)));
+  // A program-level statement total has no invoice allocation. Keep it aggregate; spreading it
+  // across purchase rows would fabricate per-invoice paid amounts and claim support.
   const lines: AuditLine[] = classified.map((r) => {
     const rebate = rebateByTxn.get(r.tx.txnId) ?? new Decimal(0);
     const paid = paymentByTxn.get(r.tx.txnId) ?? new Decimal(0);
     const expected = rebate.plus(r.spaEarned);
-    const recovery = money(Decimal.max(expected.minus(paid), 0));
+    const recovery = programStatementProvided ? new Decimal(0) : money(Decimal.max(expected.minus(paid), 0));
     let classification: Classification = r.classification;
     if (classification === "ELIGIBLE_VERIFIED") {
       if (r.spaEarned.gt(0) && recovery.gt(0)) classification = "UNCLAIMED_SPA_ELIGIBLE";
@@ -373,14 +390,19 @@ export function reconcile(
       qty: r.qty.toString(), grossSpend: str(r.rawSpend), netEligibleSpend: str(r.net),
       rebateEarned: str(rebate), spaEarned: str(r.spaEarned), supplierPaid: str(money(paid)),
       recoveryFound: str(recovery), classification, citation: rule,
-      notes: recovery.gt(0) ? `${r.notes}${r.notes ? " " : ""}Expected ${str(money(expected))}; posted ${str(money(paid))}.` : r.notes,
+      notes: programStatementProvided
+        ? `${r.notes}${r.notes ? " " : ""}Program-level posted credits of ${str(money(programPayment))} are not allocated to this transaction.`
+        : recovery.gt(0) ? `${r.notes}${r.notes ? " " : ""}Expected ${str(money(expected))}; posted ${str(money(paid))}.` : r.notes,
     };
   });
 
   const gross = classified.reduce((sum, r) => sum.plus(r.rawSpend), new Decimal(0));
   const spaTotal = classified.reduce((sum, r) => sum.plus(r.spaEarned), new Decimal(0));
-  const paidTotal = lines.reduce((sum, line) => sum.plus(asDecimal(line.supplierPaid)), new Decimal(0));
-  const recoveryTotal = lines.reduce((sum, line) => sum.plus(asDecimal(line.recoveryFound)), new Decimal(0));
+  const directlyMappedPaid = lines.reduce((sum, line) => sum.plus(asDecimal(line.supplierPaid)), new Decimal(0));
+  const paidTotal = directlyMappedPaid.plus(programPayment);
+  const recoveryTotal = programStatementProvided
+    ? Decimal.max(aggregateRebate.plus(spaTotal).minus(directlyMappedPaid).minus(programPayment), 0)
+    : lines.reduce((sum, line) => sum.plus(asDecimal(line.recoveryFound)), new Decimal(0));
   const opportunity = opportunityFor(totalEligibleSpend, rules);
   const opportunityTotal = opportunity.reduce((sum, row) => sum.plus(asDecimal(row.projectedRebateUplift)), new Decimal(0));
   return {
@@ -391,6 +413,9 @@ export function reconcile(
     totals: {
       grossSpend: str(money(gross)), netEligibleSpend: str(money(totalEligibleSpend)),
       rebateEarned: str(aggregateRebate), spaEarned: str(money(spaTotal)), supplierPaid: str(money(paidTotal)),
+      unallocatedProgramPayment: str(money(programPayment)),
+      unallocatedProgramPaymentReferences: [...new Set(programPaymentReferences)],
+      programStatementProvided,
       unclaimedRecoveryFound: str(money(recoveryTotal)), quarterEndTierOpportunity: str(money(opportunityTotal)),
       transactionCount: lines.length,
       exceptionCount: lines.filter((l) => l.classification !== "ELIGIBLE_VERIFIED").length,

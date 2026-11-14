@@ -1,7 +1,9 @@
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import path from 'node:path';
 import { getStore } from '@netlify/blobs';
+import type { ReconciliationResult } from './reconciliation';
 export type IntakeRecord = { id:string;createdAt:string;company:string;name:string;email:string;supplier:string;pdfName:string;csvName:string;status:'queued'|'reviewing'|'complete' };
+export type AuditRecord = { id:string;createdAt:string;ownerEmail:string;supplierName:string;csvName:string;contractName:string|null;result:ReconciliationResult };
 export function dataDir() { return process.env.REBATE_DATA_DIR || path.join(process.cwd(),'data','runtime'); }
 function cloud() { return process.env.NETLIFY === 'true' || Boolean(process.env.NETLIFY_BLOBS_CONTEXT); }
 function blobs() { return getStore({name:'rebate-intakes',consistency:'strong'}); }
@@ -29,4 +31,14 @@ export async function saveIntakeFiles(id:string,pdf:Uint8Array,csv:Uint8Array) {
 export async function readIntakeFile(id:string,kind:string):Promise<Uint8Array> {
   if(cloud()) { const body=await blobs().get(`uploads/${id}/${kind}`,{type:'arrayBuffer'}); if(!body) throw new Error('File unavailable'); return new Uint8Array(body); }
   return readFile(path.join(dataDir(),'uploads',id,kind==='pdf'?'supplier.pdf':'purchases.csv'));
+}
+export async function saveAudit(record:AuditRecord):Promise<void> {
+  if(cloud()) { await blobs().setJSON(`audits/${record.id}`,record); return; }
+  const dir=path.join(dataDir(),'audits'); await mkdir(dir,{recursive:true});
+  const temp=path.join(dir,`${record.id}.tmp`); await writeFile(temp,JSON.stringify(record),'utf8'); await rename(temp,path.join(dir,`${record.id}.json`));
+}
+export async function getAudit(id:string):Promise<AuditRecord|null> {
+  if(cloud()) return blobs().get(`audits/${id}`,{type:'json'});
+  try { return JSON.parse(await readFile(path.join(dataDir(),'audits',`${id}.json`),'utf8')) as AuditRecord; }
+  catch(e) { if((e as NodeJS.ErrnoException).code==='ENOENT') return null; throw e; }
 }

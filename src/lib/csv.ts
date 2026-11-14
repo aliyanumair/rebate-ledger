@@ -1,12 +1,12 @@
 import { normalizeSku } from "./reconciliation";
 
-export const CSV_FIELDS = ["txn_id", "date", "vendor_name", "sku", "description", "qty", "unit_cost", "extended_cost", "customer_name", "project_code", "txn_type"];
+export const CSV_FIELDS = ["txn_id", "invoice_id", "date", "vendor_name", "sku", "description", "qty", "unit_cost", "extended_cost", "customer_name", "project_code", "txn_type"];
 const aliases: Record<string, string[]> = {
-  txn_id: ["txnid", "transactionid", "lineid", "rowid"], date: ["date", "transactiondate", "invoicedate", "postingdate", "posteddate"],
-  vendor_name: ["vendorname", "suppliername", "manufacturer", "vendor", "supplier"], sku: ["suppliersku", "sku", "itemnumber", "itemno", "partnumber", "productcode", "itemcode"],
+  txn_id: ["txnid", "transactionid", "lineid", "rowid"], invoice_id: ["invoiceid", "invoicenumber", "invoiceno", "invoicenum", "invno", "invnumber"], date: ["date", "transactiondate", "invoicedate", "postingdate", "posteddate"],
+  vendor_name: ["vendorname", "suppliername", "manufacturer", "vendor", "supplier"], sku: ["suppliersku", "sku", "itemnumber", "itemno", "partnumber", "partno", "productcode", "itemcode"],
   description: ["description", "productdescription", "itemdescription", "detail"], qty: ["qty", "quantity", "units", "qtyshipped"],
   unit_cost: ["unitcost", "unitprice", "priceeach", "costperunit"], extended_cost: ["extendedcost", "lineamount", "extamt", "extendedamount", "linetotal", "netamount", "extendedprice"],
-  customer_name: ["customername", "customer", "soldto", "accountname"], project_code: ["projectcode", "job", "jobnumber", "contract"], txn_type: ["txntype", "transactiontype", "linetype", "doctype", "type"],
+  customer_name: ["customername", "customer", "customerid", "custid", "soldto", "accountname"], project_code: ["projectcode", "job", "jobnumber", "contract"], txn_type: ["txntype", "transactiontype", "linetype", "doctype", "type"],
 };
 const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "");
 export function detectColumnMapping(headers: string[], previous: Record<string, string> = {}) {

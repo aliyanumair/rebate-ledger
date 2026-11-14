@@ -71,6 +71,11 @@ export async function createAuditWorkbook(result: ReconciliationResult): Promise
       earned: new Decimal(line.rebateEarned).plus(line.spaEarned).toNumber(), paid: fmt(line.supplierPaid), recovery: fmt(line.recoveryFound),
       citation: line.citation ?? "", notes: line.notes });
   });
+  if (result.totals.programStatementProvided) {
+    discrepancy.addRow({ txnId: "", invoiceId: "", date: "", sku: "", customer: "", classification: "UNALLOCATED PROGRAM PAYMENT",
+      earned: 0, paid: fmt(result.totals.unallocatedProgramPayment), recovery: 0, citation: "",
+      notes: `Aggregate statement credit; no invoice allocation asserted. References: ${result.totals.unallocatedProgramPaymentReferences.join(", ") || "not supplied"}.` });
+  }
   header(discrepancy); currencyColumns(discrepancy, [7, 8, 9]);
 
   const audit = workbook.addWorksheet("Full Transaction Audit Trail");
@@ -124,7 +129,14 @@ export async function createAuditWorkbook(result: ReconciliationResult): Promise
     [5, "K", result.totals.grossSpend], [6, "L", result.totals.netEligibleSpend],
     [7, "M", result.totals.rebateEarned], [8, "N", result.totals.spaEarned],
     [9, "O", result.totals.supplierPaid], [10, "P", result.totals.unclaimedRecoveryFound],
-  ] as const) formula(row, `ROUND(SUM(${trail}!${column}:${column}),2)`, value);
+  ] as const) {
+    const expression = row === 9
+      ? `ROUND(SUM(${trail}!${column}:${column})+SUMIFS('Discrepancy & Claim Lines'!H:H,'Discrepancy & Claim Lines'!F:F,"UNALLOCATED PROGRAM PAYMENT"),2)`
+      : row === 10
+        ? `IF(COUNTIF('Discrepancy & Claim Lines'!F:F,"UNALLOCATED PROGRAM PAYMENT")>0,MAX(B7+B8-B9,0),ROUND(SUM(${trail}!${column}:${column}),2))`
+        : `ROUND(SUM(${trail}!${column}:${column}),2)`;
+    formula(row, expression, value);
+  }
   formula(11, `ROUND(SUMIFS(${alertSheet}!G:G,${alertSheet}!A:A,"Quarter-end tier opportunity"),2)`, result.totals.quarterEndTierOpportunity);
   formula(12, `COUNTA(${trail}!Q:Q)-1-COUNTIF(${trail}!Q:Q,"ELIGIBLE_VERIFIED")`, result.totals.exceptionCount);
   for (let row = 5; row <= 11; row += 1) summary.getCell(row, 2).numFmt = "$#,##0.00";
@@ -204,7 +216,9 @@ export async function createDisputePdf(result: ReconciliationResult, claimRefere
   draw("Affected invoices and claim detail", 10, true, 1);
   const claims = result.lines.filter((line) => new Decimal(line.recoveryFound).gt(0));
   const shown = claims.slice(0, 5);
-  if (!claims.length) draw("No positive unpaid variance was found in the supplied payment data.", 9, false, 2);
+  if (result.totals.programStatementProvided) {
+    draw(`Aggregate statement reconciliation only: $${result.totals.unallocatedProgramPayment} in program-level credits was not allocated to individual invoices. No invoice-specific paid amounts or affected invoice IDs are asserted. Statement references: ${result.totals.unallocatedProgramPaymentReferences.join(", ") || "not supplied"}.`, 9, false, 5);
+  } else if (!claims.length) draw("No positive unpaid variance was found in the supplied payment data.", 9, false, 2);
   for (const line of shown) draw(`${line.invoiceId ?? line.txnId} | txn ${line.txnId} | earned $${new Decimal(line.rebateEarned).plus(line.spaEarned).toFixed(2)} | paid $${line.supplierPaid} | owed $${line.recoveryFound}`, 8, false, 2);
   if (claims.length > shown.length) draw(`${claims.length - shown.length} additional affected lines are itemized in Discrepancy & Claim Lines in the attached workbook.`, 8, false, 2);
   draw("Exact contractual basis", 10, true, 1);

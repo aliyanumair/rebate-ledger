@@ -52,6 +52,9 @@ try {
   assert.equal(controllerLogin.status, 200);
   const controllerCookie = controllerLogin.headers.get('set-cookie')?.split(';')[0];
   assert.ok(controllerCookie);
+  const sameOriginLogin = await fetch(`${base}/api/auth/login`, {method:'POST',headers:{'content-type':'application/json',Origin:base},body:JSON.stringify({email:'controller@acme-hvac.com',password:'Demo1234!'})});
+  assert.equal(sameOriginLogin.status, 200, 'same-origin browser login should not be rejected behind the Next server');
+  assert.equal((await fetch(`${base}/api/auth/logout`, {method:'POST',headers:{Origin:'https://attacker.example',Cookie:controllerCookie}})).status, 403, 'cross-origin logout mutation should be rejected');
   assert.equal((await status('/api/audits', controllerCookie)).status, 403, 'intake queue must be admin-only');
 
   const sampleDir = path.join(root, 'data/benchmark/sample_set_1');
@@ -94,7 +97,46 @@ try {
   assert.equal(pdfResponse.status, 200);
   assert.equal((await PDFDocument.load(await pdfResponse.arrayBuffer())).getPageCount(), 1);
 
-  console.log('HTTP smoke checks passed: public routes, auth/role checks, PDF extraction, intake storage/admin retrieval, seeded audit, and both exports.');
+  const reconciliation = new FormData();
+  reconciliation.set('supplier', 'Synthetic HVAC');
+  reconciliation.set('rules', JSON.stringify({ supplierName:'Synthetic HVAC', programName:'One-line test', verification:{status:'verified',verifiedBy:'Smoke reviewer',ruleVersion:'test-v1'}, opportunityMethod:'rate-difference-at-target', nearMissThreshold:'150', tiers:[{minSpend:'0',ratePercent:'2',mode:'retroactive',citation:'Clause 2'},{minSpend:'200',ratePercent:'4',mode:'retroactive',citation:'Clause 2'}], eligibleSkus:['K-1'], clauseCitations:['Clause 2'] }));
+  reconciliation.set('mapping', JSON.stringify({ date:'Date', sku:'Part_No', qty:'Qty', extended_cost:'Ext_Amt', customer_name:'Cust_ID', txn_type:'Txn Type', invoice_id:'Invoice' }));
+  reconciliation.set('payments', JSON.stringify([{ scope:'program', amount:'1.00', reference:'synthetic credit statement' }]));
+  reconciliation.set('csv', new Blob(['Date,Part_No,Qty,Ext_Amt,Cust_ID,Txn Type,Invoice\n2026-07-01,K-1,1,100.00,ACME,PURCHASE,INV-SYN-01'], {type:'text/csv'}), 'synthetic.csv');
+  const calculated = await fetch(`${base}/api/reconcile`, {method:'POST',body:reconciliation,headers:{Cookie:controllerCookie}});
+  assert.equal(calculated.status, 200);
+  const created = await calculated.json();
+  assert.equal(created.result.totals.rebateEarned, '2.00');
+  assert.equal(created.result.totals.supplierPaid, '1.00');
+  assert.equal(created.result.totals.unclaimedRecoveryFound, '1.00');
+  assert.equal(created.result.totals.quarterEndTierOpportunity, '4.00');
+  assert.equal(created.result.lines[0].invoiceId, 'INV-SYN-01');
+  assert.equal(created.result.lines[0].recoveryFound, '0.00', 'aggregate payment totals must not generate invoice recovery claims');
+  assert.equal(created.result.totals.programStatementProvided, true);
+  const missingStatement = new FormData();
+  for (const [key,value] of reconciliation.entries()) missingStatement.set(key,value);
+  missingStatement.set('payments', '[]');
+  assert.equal((await fetch(`${base}/api/reconcile`, {method:'POST',body:missingStatement,headers:{Cookie:controllerCookie}})).status, 422, 'aggregate statement total is required, including explicit zero');
+  const stored = await status(`/api/audits/${created.auditId}`, controllerCookie);
+  const storedBody = await stored.json();
+  const storedAdmin = await status(`/api/audits/${created.auditId}`, adminCookie);
+  assert.equal(storedAdmin.status, 200, JSON.stringify({controller:storedBody,admin:await storedAdmin.json()}));
+  assert.equal(stored.status, 200, JSON.stringify(storedBody));
+  assert.equal(storedBody.result.totals.unclaimedRecoveryFound, '1.00');
+  const calculatedWorkbook = await status(`/api/audits/${created.auditId}/exports/xlsx`, controllerCookie);
+  assert.equal(calculatedWorkbook.status, 200);
+  const actualWorkbook = new ExcelJS.Workbook();
+  await actualWorkbook.xlsx.load(Buffer.from(await calculatedWorkbook.arrayBuffer()));
+  assert.equal(actualWorkbook.worksheets.length, 4);
+  const calculatedPdf = await status(`/api/audits/${created.auditId}/exports/dispute`, controllerCookie);
+  assert.equal(calculatedPdf.status, 200);
+  assert.equal((await PDFDocument.load(await calculatedPdf.arrayBuffer())).getPageCount(), 1);
+  const unverified = new FormData();
+  for (const [key,value] of reconciliation.entries()) unverified.set(key,value);
+  unverified.set('rules', JSON.stringify({ supplierName:'Synthetic HVAC', programName:'Unverified', verification:{status:'unverified',verifiedBy:'',ruleVersion:'test-v1'}, tiers:[{minSpend:'0',ratePercent:'2',mode:'retroactive',citation:'Clause 2'}] }));
+  assert.equal((await fetch(`${base}/api/reconcile`, {method:'POST',body:unverified,headers:{Cookie:controllerCookie}})).status, 422);
+
+  console.log('HTTP smoke checks passed: public routes, auth/role checks, PDF extraction, intake storage, deterministic upload reconciliation, owner readback, unverified-rule blocking, and both exports.');
 } finally {
   if (server.exitCode === null) {
     const exited = new Promise((resolve) => server.once('exit', resolve));

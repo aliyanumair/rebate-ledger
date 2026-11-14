@@ -23,11 +23,15 @@ async function main() {
   const totals = [result.totals.grossSpend, result.totals.netEligibleSpend, result.totals.rebateEarned, result.totals.spaEarned, result.totals.supplierPaid, result.totals.unclaimedRecoveryFound];
   for (let i = 0; i < totals.length; i += 1) {
     const cell = summary.getCell(5 + i, 2);
-    assert.match(cell.formula, /^ROUND\(SUM\(/);
+    if (i < 4) assert.match(cell.formula, /^ROUND\(SUM\(/);
+    if (i === 4) assert.match(cell.formula, /SUMIFS/);
+    if (i === 5) assert.match(cell.formula, /MAX\(B7\+B8-B9,0\)/);
     assert.equal(new Decimal(String(cell.result)).toFixed(2), totals[i]);
     let sum = new Decimal(0);
     audit.getColumn(11 + i).eachCell((value, row) => { if (row > 1) sum = sum.plus(String(value.value)); });
-    assert.equal(sum.toFixed(2), totals[i], 'detail must equal engine/UI metric to $0.00');
+    if (i < 4) assert.equal(sum.toFixed(2), totals[i], 'transaction detail must equal engine/UI metric to $0.00');
+    if (i === 4) assert.equal(sum.plus(result.totals.unallocatedProgramPayment).toFixed(2), totals[i], 'supplier paid equals direct detail plus unallocated statement payments');
+    if (i === 5) assert.equal(result.lines.reduce((total, line) => total.plus(line.recoveryFound), new Decimal(0)).toFixed(2), '0.00', 'program-scope totals must not create invoice-level recovery rows');
     assert.equal(cell.numFmt, '$#,##0.00');
   }
   assert.match(summary.getCell(11, 2).formula, /SUMIFS/);
@@ -45,13 +49,16 @@ async function main() {
     const text = (await parser.getText()).text;
     assert.match(text, /NET RECOVERY REQUESTED/);
     for (const value of [result.totals.unclaimedRecoveryFound, result.totals.rebateEarned, result.totals.supplierPaid, result.totals.quarterEndTierOpportunity]) assert.ok(text.includes(`$${value}`));
-    for (const line of result.lines.filter((item) => new Decimal(item.recoveryFound).gt(0)).slice(0, 5)) assert.ok(text.includes(line.invoiceId ?? line.txnId));
+    assert.match(text, /Aggregate statement reconciliation only/);
+    assert.match(text, /not allocated to individual invoices/);
+    assert.match(text, /invoice-specific paid amounts or affected invoice IDs are asserted/);
+    assert.match(text, /CM-2607-118/);
     assert.match(text, /Clause|clause/);
   } finally { await parser.destroy(); }
   await assert.rejects(createDisputePdf({ ...result, supplierName: 'W'.repeat(3000) }), /section limit|capacity/);
   await mkdir('.artifacts', { recursive: true });
   await writeFile('.artifacts/benchmark-audit.xlsx', bytes);
   await writeFile('.artifacts/benchmark-dispute.pdf', pdfBytes);
-  console.log('Export fidelity PASS: live formulas, exact detail/cache totals, four frozen tabs, parsed one-page claim, invoice/clause citations, explicit overflow rejection.');
+  console.log('Export fidelity PASS: live formulas, exact detail/cache totals, four frozen tabs, parsed one-page aggregate claim with statement/clause references, explicit overflow rejection.');
 }
 void main().catch((error: unknown) => { console.error(error); process.exitCode = 1; });

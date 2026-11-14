@@ -9,16 +9,31 @@ async function main() {
   const { result } = await loadBenchmarkAudit();
   assert.deepEqual([result.totals.netEligibleSpend, result.totals.rebateEarned, result.totals.supplierPaid, result.totals.unclaimedRecoveryFound, result.totals.quarterEndTierOpportunity], ["399800.00", "7996.00", "7246.00", "750.00", "4004.00"]);
   assert.equal(result.totals.spaEarned, "0.00"); assert.equal(result.opportunities[0].additionalSpendNeeded, "600.00");
+  assert.equal(result.totals.unallocatedProgramPayment, "7246.00");
+  assert.equal(result.lines.filter((line) => line.recoveryFound !== "0.00").length, 0, "program-scope statement totals must not invent invoice-level claims");
   const rules: ReconciliationRules = { supplierName: "Synthetic", programName: "Synthetic test", verification: { status: "verified", verifiedBy: "Fixture reviewer", ruleVersion: "1" }, tiers: [{ minSpend: "0", ratePercent: "2", mode: "retroactive", citation: "Clause 2" }, { minSpend: "100", ratePercent: "4", mode: "retroactive", citation: "Clause 2" }], eligibleSkus: ["SKU1"], freightAndTaxTerms: ["freight", "tax"] };
   const tx = (id: string, amount = "150", qty = "1", txnType = "PURCHASE", sku = "SKU-1"): PurchaseTransaction => ({ txnId: id, date: "2026-07-01", vendorName: "Synthetic", sku, description: "Equipment", qty, unitCost: amount, extendedCost: amount, txnType });
   assert.equal(reconcile([tx("retro")], rules).totals.rebateEarned, "6.00");
   assert.throws(() => reconcile([{ ...tx("bad-date"), date: "2026-02-30" }], rules), /Invalid SKU or ISO date/);
   assert.throws(() => reconcile([tx("payment")], rules, [{ txnId: "missing", amount: "5" }]), /did not match/);
   assert.throws(() => reconcile([tx("payment")], rules, [{ scope: "program", amount: "-5" }]), /Negative supplier/);
+  const explicitZeroStatement = reconcile([tx("zero-statement")], rules, [{ scope: "program", amount: "0.00", reference: "statement shows no payment" }]);
+  assert.equal(explicitZeroStatement.totals.unclaimedRecoveryFound, "6.00");
+  assert.equal(explicitZeroStatement.lines[0].recoveryFound, "0.00", "aggregate zero payments must not create invoice-specific recovery claims");
+  assert.equal(explicitZeroStatement.totals.programStatementProvided, true);
   const incremental: ReconciliationRules = { ...rules, tiers: rules.tiers.map(tier => ({ ...tier, mode: "incremental" })) };
   assert.equal(reconcile([tx("incremental")], incremental).totals.rebateEarned, "4.00");
   assert.equal(reconcile([tx("edge", "100")], rules).totals.rebateEarned, "4.00");
   assert.equal(reconcile([tx("below", "99.99")], rules).totals.rebateEarned, "2.00");
+  const cliffRules: ReconciliationRules = { ...rules, opportunityMethod: "rate-difference-at-target", nearMissThreshold: "5000", tiers: [
+    { minSpend: "0", ratePercent: "2", mode: "retroactive", citation: "Clause 4.1" },
+    { minSpend: "100000", ratePercent: "4", mode: "retroactive", citation: "Clause 4.2" },
+  ] };
+  const nearMiss = reconcile([tx("near-miss", "95500")], cliffRules);
+  assert.equal(nearMiss.opportunities[0].additionalSpendNeeded, "4500.00");
+  assert.equal(nearMiss.totals.rebateEarned, "1910.00");
+  assert.equal(nearMiss.totals.quarterEndTierOpportunity, "2000.00");
+  assert.equal(nearMiss.totals.rebateEarned !== nearMiss.totals.quarterEndTierOpportunity, true, "hypothetical cliff uplift never changes earned rebate totals");
   assert.equal(reconcile([tx("zero", "0")], rules).totals.rebateEarned, "0.00");
   assert.equal(reconcile([tx("return", "-100", "-1", "RMA")], rules).totals.netEligibleSpend, "0.00");
   assert.equal(reconcile([tx("freight", "100", "1", "FREIGHT", "FREIGHT")], rules).totals.netEligibleSpend, "0.00");
@@ -32,12 +47,20 @@ async function main() {
   assert.throws(() => validateReconciliationRules({ ...rules, tiers: [{ minSpend: "0", ratePercent: "2", citation: "Clause" }] }), /explicitly specify/);
   assert.throws(() => validateReconciliationRules({ ...rules, tiers: [...rules.tiers, { ...rules.tiers[0] }] }), /Duplicate tier/);
   const spa = { ...rules, spas: [{ sku: "SKU1", standardPrice: "100", supportedPrice: "80", approvedCustomers: ["Approved"], citation: "SPA Clause 3" }] };
-  assert.equal(reconcile([{ ...tx("spa", "100", "2"), customerName: "Approved" }], spa).totals.spaEarned, "40.00");
-  assert.equal(reconcile([{ ...tx("spa", "100", "2"), customerName: "Other" }], spa).totals.spaEarned, "0.00");
+  const approvedSpa = reconcile([{ ...tx("spa", "100", "2"), customerName: "Approved" }], spa);
+  assert.equal(approvedSpa.totals.spaEarned, "40.00"); assert.equal(approvedSpa.totals.rebateEarned, "0.00"); assert.equal(approvedSpa.totals.netEligibleSpend, "0.00", "Non-stackable SPA line is excluded from tier spend.");
+  const unapprovedSpa = reconcile([{ ...tx("spa-unapproved", "100", "2"), customerName: "Other" }], spa);
+  assert.equal(unapprovedSpa.totals.spaEarned, "0.00"); assert.equal(unapprovedSpa.totals.rebateEarned, "4.00", "Unapproved customer receives no SPA benefit and may earn the eligible volume rebate.");
+  const stackableSpa = { ...spa, spas: spa.spas.map(item => ({ ...item, stackWithVolumeRebate: true })) };
+  assert.equal(reconcile([{ ...tx("spa-stack", "100", "2"), customerName: "Approved" }], stackableSpa).totals.rebateEarned, "4.00");
   assert.equal(reconcile([tx("rounding", "0.25")], rules).totals.rebateEarned, "0.01");
   const table = parseCsvTable('\uFEFFItem No.;Invoice Date;Qty Shipped;Ext Amt;Sold To;Doc Type\nSKU-1;2026-07-01;1;100;Client;PURCHASE');
   const mapping = detectColumnMapping(table.headers); validateColumnMapping(mapping, table.headers);
   assert.deepEqual([mapping.sku, mapping.date, mapping.qty, mapping.extended_cost, mapping.customer_name, mapping.txn_type], table.headers);
+  const erp = parseCsvTable('Part_No,Invoice Number,Date,Qty,Ext_Amt,Cust_ID,Txn Type\nKOH-K-22033,INV-1,2026-07-01,1,100,ACME,PURCHASE');
+  const erpMapping = detectColumnMapping(erp.headers); validateColumnMapping(erpMapping, erp.headers);
+  assert.deepEqual([erpMapping.sku, erpMapping.invoice_id, erpMapping.date, erpMapping.qty, erpMapping.extended_cost, erpMapping.customer_name, erpMapping.txn_type], erp.headers);
+  assert.equal(reconcile([tx('mangled-sku', '100', '1', 'PURCHASE', 'KOH-K-22033')], rules).lines[0].classification, 'UNMATCHED_SKU_NEEDS_REVIEW', 'A fuzzy SKU must remain unclaimed until a reviewer maps it.');
   const custom = detectColumnMapping(table.headers, { sku: "Sold To" }); assert.equal(custom.sku, "Sold To", "Explicit mapping must win over auto-detection on reload");
   assert.equal(parseCsvTable('sku,description\nSKU1,"Two lines\nof text"').rows[0][1], "Two lines\nof text");
   assert.throws(() => parseCsvTable('sku,sku\n1,2'), /headers/);

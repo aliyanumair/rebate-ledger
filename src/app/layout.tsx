@@ -4,6 +4,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "RebateLedger — Find every rebate you earned",
   description: "A clear, auditable workspace for supplier rebate reconciliation.",
+  icons: { icon: "/favicon.svg" },
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

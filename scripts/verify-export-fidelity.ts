@@ -3,7 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import ExcelJS from 'exceljs';
 import Decimal from 'decimal.js';
 import { PDFDocument } from 'pdf-lib';
-import { PDFParse } from 'pdf-parse';
+import PDFParser from 'pdf2json';
 import { loadBenchmarkAudit } from '../src/lib/benchmark';
 import { createAuditWorkbook, createDisputePdf } from '../src/lib/exports';
 
@@ -44,17 +44,19 @@ async function main() {
   }
   const pdfBytes = await createDisputePdf(result, 'BENCHMARK-FIDELITY');
   assert.equal((await PDFDocument.load(pdfBytes)).getPageCount(), 1);
-  const parser = new PDFParse({ data: pdfBytes });
-  try {
-    const text = (await parser.getText()).text;
-    assert.match(text, /NET RECOVERY REQUESTED/);
-    for (const value of [result.totals.unclaimedRecoveryFound, result.totals.rebateEarned, result.totals.supplierPaid, result.totals.quarterEndTierOpportunity]) assert.ok(text.includes(`$${value}`));
-    assert.match(text, /Aggregate statement reconciliation only/);
-    assert.match(text, /not allocated to individual invoices/);
-    assert.match(text, /invoice-specific paid amounts or affected invoice IDs are asserted/);
-    assert.match(text, /CM-2607-118/);
-    assert.match(text, /Clause|clause/);
-  } finally { await parser.destroy(); }
+  const parser = new PDFParser(null, true, '');
+  const text = await new Promise<string>((resolve, reject) => {
+    parser.on('pdfParser_dataError', (error) => reject((error as { parserError?: Error }).parserError ?? error));
+    parser.on('pdfParser_dataReady', (data) => resolve(data.Pages.flatMap(page => page.Texts.flatMap(item => item.R.map(run => { try { return decodeURIComponent(run.T); } catch { return run.T; } }))).join(' ')));
+    parser.parseBuffer(pdfBytes);
+  }).finally(() => parser.destroy());
+  assert.match(text, /NET RECOVERY REQUESTED/);
+  for (const value of [result.totals.unclaimedRecoveryFound, result.totals.rebateEarned, result.totals.supplierPaid, result.totals.quarterEndTierOpportunity]) assert.ok(text.includes(`$${value}`));
+  assert.match(text, /Aggregate statement reconciliation only/);
+  assert.match(text, /not allocated to individual invoices/);
+  assert.match(text, /invoice-specific paid amounts or affected invoice IDs are asserted/);
+  assert.match(text, /CM-2607-118/);
+  assert.match(text, /Clause|clause/);
   await assert.rejects(createDisputePdf({ ...result, supplierName: 'W'.repeat(3000) }), /section limit|capacity/);
   await mkdir('.artifacts', { recursive: true });
   await writeFile('.artifacts/benchmark-audit.xlsx', bytes);

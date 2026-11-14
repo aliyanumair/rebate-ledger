@@ -108,7 +108,7 @@ export function UploadWorkspace() {
     finally { setRunning(false); }
   }
   const optionalFields = CSV_FIELDS.filter(field => !REQUIRED_CSV_FIELDS.includes(field));
-  return <div className="dashboard-page upload-page" data-extraction-runtime="js-dom-matrix-worker-v2">
+  return <div className="dashboard-page upload-page" data-extraction-runtime="pdf2json-node-text-v1">
     <div className="crumb-back"><Link href="/dashboard">← Back to overview</Link></div>
     <div className="page-header"><div><div className="eyebrow">NEW AUDIT WORKSPACE</div><h1>Upload supplier files</h1><p>One supplier, one audit period. Unverified rules cannot be reconciled.</p></div><span className="tag tag-neutral">DRAFT WORKSPACE</span></div>
     <div className="upload-layout"><div>

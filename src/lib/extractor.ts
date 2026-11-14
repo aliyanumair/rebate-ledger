@@ -1,6 +1,5 @@
 import Decimal from "decimal.js";
-import { pathToFileURL } from "node:url";
-import CSSMatrix from "@thednp/dommatrix";
+import PDFParser from "pdf2json";
 
 /** Deterministic PDF-to-rule extraction. This module extracts citations and rules only; it never calculates rebates. */
 export type RuleCitation = { source: string; pageNumber: number | null; clauseId: string | null; excerpt: string };
@@ -126,32 +125,35 @@ export function extractRulesFromText(text: string, sourceName = "supplier-docume
 
 /** Optional, explicit seam for a future assisted extractor. API keys alone never cause a network request. */
 export type AssistedRuleExtractor = (text: string, sourceName: string) => Promise<ExtractedSupplierRules>;
-function makePdfWorkerShimUrl(): string {
-  const moduleApi = process.getBuiltinModule("module") as typeof import("node:module") | undefined;
-  if (!moduleApi) throw new Error("PDF worker module resolution is unavailable in this Node runtime.");
-  const require = moduleApi.createRequire(`${process.cwd()}/package.json`);
-  const matrixModule = pathToFileURL(require.resolve("@thednp/dommatrix")).href;
-  const workerModule = pathToFileURL(require.resolve("pdfjs-dist/legacy/build/pdf.worker.mjs")).href;
-  const source = `export let WorkerMessageHandler;const matrix=await import(${JSON.stringify(matrixModule)});globalThis.DOMMatrix??=matrix.default??matrix;({WorkerMessageHandler}=await import(${JSON.stringify(workerModule)}));`;
-  return `data:text/javascript,${encodeURIComponent(source)}`;
+function decodePdfText(value: string): string {
+  try { return decodeURIComponent(value); } catch { return value; }
 }
 export async function extractRulesFromPdf(buffer: Buffer | Uint8Array, sourceName = "supplier-document.pdf", assistedExtractor?: AssistedRuleExtractor): Promise<ExtractedSupplierRules> {
   if (buffer.length === 0 || Buffer.from(buffer).subarray(0, 5).toString() !== "%PDF-") throw new Error("Unreadable PDF. Use Manual Contract Rule Entry.");
-  // pdfjs-dist evaluates a top-level DOMMatrix before its own Node fallback can run.
-  // A pure JS shim keeps text extraction portable across Netlify's Linux runtime and local hosts.
-  const runtime = globalThis as unknown as Record<string, unknown>;
-  runtime.DOMMatrix ??= CSSMatrix;
-  const { PDFParse } = await import("pdf-parse");
-  // PDF.js parses in a worker thread in Node. A data-module worker wrapper installs the same
-  // DOMMatrix shim there before importing pdf.worker.mjs; the explicit export preserves fake-worker setup.
-  PDFParse.setWorker(makePdfWorkerShimUrl());
-  const parser = new PDFParse({ data: Buffer.from(buffer) });
-  try {
-    const parsed = await parser.getText();
-    const text = parsed.pages.map(page => `[[PAGE ${page.num}]]\n${page.text}`).join("\n");
-    if (parsed.pages.every(page => page.text.trim().length < 20)) throw new Error("Scanned or unreadable PDF. Use Manual Contract Rule Entry and verify against the source.");
-    return assistedExtractor ? assistedExtractor(text, sourceName) : extractRulesFromText(text, sourceName);
-  } finally {
-    await parser.destroy();
-  }
+  const parser = new PDFParser(null, true, "");
+  const text = await new Promise<string>((resolve, reject) => {
+    parser.on("pdfParser_dataError", (error) => {
+      parser.destroy();
+      const nestedError = (error as { parserError?: unknown }).parserError;
+      const detail = nestedError instanceof Error ? nestedError.message : error instanceof Error ? error.message : String(nestedError ?? error);
+      reject(new Error(`Unreadable or unsupported PDF. Use Manual Contract Rule Entry. ${detail}`));
+    });
+    parser.on("pdfParser_dataReady", (data) => {
+      const pages = data.Pages.map((page, index) => {
+        const positioned = page.Texts.map((item) => ({ y: item.y, x: item.x, text: item.R.map((run) => decodePdfText(run.T)).join("") })).sort((a, b) => a.y - b.y || a.x - b.x);
+        const rows: Array<{ y: number; items: typeof positioned }> = [];
+        for (const item of positioned) {
+          const row = rows.at(-1);
+          if (row && Math.abs(row.y - item.y) < 0.12) row.items.push(item);
+          else rows.push({ y: item.y, items: [item] });
+        }
+        const pageText = rows.map((row) => row.items.map((item) => item.text).join(" ")).join("\n");
+        return `[[PAGE ${index + 1}]]\n${pageText}`;
+      });
+      resolve(pages.join("\n"));
+    });
+    parser.parseBuffer(Buffer.from(buffer));
+  }).finally(() => parser.destroy());
+  if (text.replace(/\[\[PAGE \d+\]\]/g, "").trim().length < 20) throw new Error("Scanned or unreadable PDF. Use Manual Contract Rule Entry and verify against the source.");
+  return assistedExtractor ? assistedExtractor(text, sourceName) : extractRulesFromText(text, sourceName);
 }

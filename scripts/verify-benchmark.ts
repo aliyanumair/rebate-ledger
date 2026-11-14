@@ -6,7 +6,9 @@ import { PDFDocument } from 'pdf-lib';
 import Decimal from 'decimal.js';
 import { reconcile, reconcileCreditStatement, type PurchaseTransaction, type RebateTier, type SupplierPayment } from '../src/lib/reconciliation';
 import { generateAuditWorkbook, generateDisputePdf } from '../src/lib/exports';
-import { extractRulesFromPdf } from '../src/lib/extractor';
+import { extractRulesFromPdf, preparePdfExtractionRuntime } from '../src/lib/extractor';
+import { extractedRulesMatchSource, validateExtractedRules } from '../src/lib/rule-validation';
+import { autoMapCsvHeaders, parseCsv as parseCsvTable, validateCsvColumnMap } from '../src/lib/csv';
 
 const dir = path.join(process.cwd(), 'data/benchmark/sample_set_1');
 function parseCsv(text: string): Record<string, string>[] {
@@ -39,6 +41,7 @@ type RawRules = {
   excluded_skus: string[]; excluded_freight_terms: string[]; claim_deadline_days_after_quarter_end: number;
 };
 async function main() {
+await assert.rejects(preparePdfExtractionRuntime(async () => { throw new Error('simulated missing optional native package'); }), /DOMMatrix-compatible canvas dependency/, 'runtime compatibility failures must produce an actionable extraction error');
 const groundTruth = JSON.parse(await readFile(path.join(dir, 'expected_ground_truth.json'), 'utf8')) as Truth;
 const benchmarkRules = JSON.parse(await readFile(path.join(dir, 'benchmark_rules.json'), 'utf8')) as RawRules;
 const txRows = parseCsv(await readFile(path.join(dir, 'wholesaler_erp_purchases_q3.csv'), 'utf8'));
@@ -46,13 +49,29 @@ const creditRows = parseCsv(await readFile(path.join(dir, 'manufacturer_q3_credi
 assert.equal(txRows.length, 1500, 'benchmark must include exactly 1,500 transaction rows');
 const contractRules = await extractRulesFromPdf(await readFile(path.join(dir, 'carrier_hvac_2026_rebate_agreement.pdf')), 'carrier_hvac_2026_rebate_agreement.pdf');
 const spaRules = await extractRulesFromPdf(await readFile(path.join(dir, 'kohler_spa_program_q3.pdf')), 'kohler_spa_program_q3.pdf');
-assert.equal(contractRules.tiers.length, 3, 'contract extractor must find all three volume tiers');
-assert.equal(contractRules.tiers[2].minimumSpend, '200000.00');
-assert.equal(contractRules.tiers[2].calculation, 'retroactive');
+assert.equal(contractRules.tiers.length, 2, 'contract extractor must find both retroactive volume tiers');
+assert.equal(contractRules.tiers[1].minimumSpend, '400000.00');
+assert.equal(contractRules.tiers[1].calculation, 'retroactive');
+assert.equal(validateExtractedRules(contractRules), true, 'contract rules with citations and explicit calculation methods are verifiable');
+assert.equal(extractedRulesMatchSource(contractRules, contractRules, 'carrier_hvac_2026_rebate_agreement.pdf'), true, 'saved rules must be bound to the selected agreement file');
+const editedExclusions = structuredClone(contractRules);
+editedExclusions.exclusions = [];
+assert.equal(extractedRulesMatchSource(editedExclusions, contractRules, 'carrier_hvac_2026_rebate_agreement.pdf'), false, 'edited exclusions cannot be used to weaken the source agreement');
+assert.equal(extractedRulesMatchSource(contractRules, contractRules, 'another-file.pdf'), false, 'rules cannot be replayed against a different source file');
 assert.ok(contractRules.exclusions.some((rule) => rule.category === 'freight' && rule.citation.clauseId === '4.2'));
 assert.ok(contractRules.claimDeadlines.some((rule) => rule.days === 45 && rule.citation.clauseId === '7.1'));
 assert.equal(spaRules.spaSkus.length, 15, 'SPA extractor must find all fifteen supported SKU prices');
 assert.ok(spaRules.spaClaimbackRules.some((rule) => /returned quantities are not payable/i.test(rule.description)), 'SPA claimback conditions must be extracted with citations');
+assert.equal(validateExtractedRules(spaRules), true, 'SPA prices with source citations must be verifiable');
+assert.equal(validateExtractedRules({ ...contractRules, tiers: contractRules.tiers.map((tier, index) => ({ ...tier, ratePercent: index === 0 ? '-2' : tier.ratePercent })) }), false, 'financial rule validator must reject negative rates');
+
+const guessedMap = autoMapCsvHeaders(['transaction_date', 'invoice_number', 'Part_No', 'Ext_Amt', 'qty', 'vendor_name', 'txn_type']);
+assert.equal(guessedMap.txn_id, 'invoice_number', 'txn id must map to invoice_number');
+assert.equal(guessedMap.date, 'transaction_date', 'date must map to transaction_date');
+assert.ok(validateCsvColumnMap({ txn_id: 'transaction_date', date: 'transaction_date' }).some(error => /assigned to more than one/.test(error)), 'duplicate source columns must be rejected');
+const quoted = parseCsvTable('invoice_number,description,extended_cost\r\nINV-1,"pump, 2 ton\nand ""quiet"" model","1,250.00"\r\n');
+assert.equal(quoted.rows[0][1], 'pump, 2 ton\nand "quiet" model', 'quoted commas, escaped quotes, and embedded CRLF must parse');
+assert.equal(quoted.rows[0][2], '1,250.00');
 
 const transactions: PurchaseTransaction[] = txRows.map((row) => ({
   txnId: row.txn_id, date: row.date, vendorName: row.vendor_name, sku: row.sku,
@@ -63,6 +82,7 @@ const transactions: PurchaseTransaction[] = txRows.map((row) => ({
 const statement = reconcileCreditStatement(creditRows.map((row) => ({
   creditId: row.credit_memo_id, creditType: 'Quarterly rebate credit',
   eligibleSpendBasis: row.eligible_spend_basis, ratePercent: row.rebate_rate.replace('%', ''),
+  expectedCredit: row.expected_credit,
   paidCredit: row.paid_credit, invoiceReferences: row.reference_invoice_id,
   citation: 'Carrier HVAC agreement, Clause 5.1',
 })));
@@ -89,7 +109,9 @@ const rules = {
 };
 const firstPass = reconcile(transactions, rules);
 assert.equal(firstPass.totals.netEligibleSpend, groundTruth.gross_eligible_spend);
+assert.equal(firstPass.totals.netEligibleSpend, '399800.00');
 assert.equal(firstPass.totals.rebateEarned, groundTruth.rebate_earned);
+assert.equal(firstPass.totals.rebateEarned, '7996.00');
 assert.equal(firstPass.opportunities[0]?.additionalSpendNeeded, groundTruth.tier.gap_to_next_tier);
 assert.equal(firstPass.opportunities[0]?.projectedRebateUplift, groundTruth.tier.quarter_end_tier_opportunity);
 
@@ -100,7 +122,10 @@ const payments: SupplierPayment[] = firstPass.lines.filter((line) => line.rebate
 });
 const audited = reconcile(transactions, rules, payments);
 assert.equal(audited.totals.unclaimedRecoveryFound, groundTruth.planted_recovery_total, 'ERP reconciliation must match planted recovery to the cent');
+assert.equal(audited.totals.unclaimedRecoveryFound, '750.00');
 assert.equal(audited.totals.supplierPaid, groundTruth.supplier_paid);
+assert.equal(audited.totals.supplierPaid, '7246.00');
+assert.equal(audited.totals.quarterEndTierOpportunity, '4004.00', 'tier opportunity must stay separate from current-period underpayment');
 assert.equal(audited.lines.filter((line) => line.recoveryFound !== '0.00').length, 5);
 
 const workbookBytes = await generateAuditWorkbook(audited);

@@ -70,8 +70,9 @@ function parseExclusions(lines: LocatedLine[], source: string): ExclusionRule[] 
 }
 function parseSpaSkus(lines: LocatedLine[], source: string): SpaSkuRule[] {
   const contractors = new Set<string>();
-  for (const line of lines) if (/approved (?:mechanical )?contractors?|participating contractors?/i.test(line.text)) {
-    (line.text.split(/approved (?:mechanical )?contractors?\s*:?|participating contractors?\s*:?/i).pop() ?? "").split(/[,;|]|\band\b/i).map(x => x.trim().replace(/[.;]$/, "")).filter(Boolean).forEach(x => contractors.add(x));
+  for (const line of lines) if (/approved (?:mechanical )?contractors\s*:?|participating contractors\s*:?/i.test(line.text)) {
+    const list = (line.text.split(/approved (?:mechanical )?contractors\s*:?|participating contractors\s*:?/i).pop() ?? "").split(/[.;]/, 1)[0];
+    list.split(/[,;|]|\band\b/i).map(x => x.trim().replace(/[.;]$/, "")).filter(Boolean).forEach(x => contractors.add(x));
   }
   const out: SpaSkuRule[] = [];
   for (const line of lines) {
@@ -107,9 +108,22 @@ export function extractRulesFromText(text: string, sourceName = "supplier-docume
   return rules;
 }
 
+export { validateExtractedRules } from './rule-validation';
+
 /** Optional, explicit seam for a future assisted extractor. API keys alone never cause a network request. */
 export type AssistedRuleExtractor = (text: string, sourceName: string) => Promise<ExtractedSupplierRules>;
+export async function preparePdfExtractionRuntime(loadCanvas: () => Promise<{ DOMMatrix: unknown }> = () => import("@napi-rs/canvas")): Promise<void> {
+  try {
+    const canvas = await loadCanvas();
+    if (!globalThis.DOMMatrix) globalThis.DOMMatrix = canvas.DOMMatrix as typeof globalThis.DOMMatrix;
+  } catch (error) {
+    throw new Error(`PDF text extraction runtime is unavailable: the server could not load the DOMMatrix-compatible canvas dependency (${error instanceof Error ? error.message : "unknown error"}). Redeploy with the current dependencies or upload a text-searchable PDF after the runtime is repaired.`);
+  }
+}
 export async function extractRulesFromPdf(buffer: Buffer | Uint8Array, sourceName = "supplier-document.pdf", assistedExtractor?: AssistedRuleExtractor): Promise<ExtractedSupplierRules> {
+  // pdfjs-dist 5 references DOMMatrix during module initialization. Netlify's
+  // bundler can omit its optional canvas dependency, so load it explicitly first.
+  await preparePdfExtractionRuntime();
   const { PDFParse } = await import("pdf-parse");
   const parser = new PDFParse({ data: Buffer.from(buffer) });
   try {

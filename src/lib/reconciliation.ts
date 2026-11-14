@@ -73,6 +73,7 @@ export interface CreditStatementLine {
   creditType?: string;
   eligibleSpendBasis: number | string;
   ratePercent: number | string;
+  expectedCredit?: number | string;
   paidCredit: number | string;
   invoiceReferences?: string;
   sku?: string;
@@ -362,7 +363,7 @@ export function reconcileCreditStatement(statementLines: CreditStatementLine[]):
   const lines = statementLines.map((line) => {
     const basis = money(line.eligibleSpendBasis);
     const rate = asDecimal(line.ratePercent);
-    const expected = money(basis.mul(rate).div(100));
+    const expected = line.expectedCredit === undefined ? money(basis.mul(rate).div(100)) : money(line.expectedCredit);
     const paid = money(line.paidCredit);
     const variance = money(expected.minus(paid));
     return {

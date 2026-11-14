@@ -1,0 +1,5 @@
+[build]
+command = "npm run build"
+
+# Netlify detects and provisions the supported Next.js adapter automatically.
+# Persistent uploads are written through @netlify/blobs from server functions.

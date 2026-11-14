@@ -6,20 +6,14 @@
   "tiers": [
     {
       "minimum_spend": "50000.00",
-      "maximum_spend_exclusive": "100000.00",
+      "maximum_spend_exclusive": "400000.00",
       "rate": "0.02",
       "method": "retroactive_to_first_dollar"
     },
     {
-      "minimum_spend": "100000.00",
-      "maximum_spend_exclusive": "200000.00",
-      "rate": "0.04",
-      "method": "retroactive_to_first_dollar"
-    },
-    {
-      "minimum_spend": "200000.00",
+      "minimum_spend": "400000.00",
       "maximum_spend_exclusive": null,
-      "rate": "0.06",
+      "rate": "0.03",
       "method": "retroactive_to_first_dollar"
     }
   ],
@@ -163,36 +157,36 @@
     {
       "credit_memo_id": "CM-Q3-26-001",
       "reference_invoice_id": "INV-Q3-0001",
-      "expected_credit": "1000.00",
-      "paid_credit": "900.00",
+      "expected_credit": "500.00",
+      "paid_credit": "400.00",
       "recovery": "100.00"
     },
     {
       "credit_memo_id": "CM-Q3-26-002",
       "reference_invoice_id": "INV-Q3-0002",
-      "expected_credit": "1000.00",
-      "paid_credit": "875.00",
+      "expected_credit": "500.00",
+      "paid_credit": "375.00",
       "recovery": "125.00"
     },
     {
       "credit_memo_id": "CM-Q3-26-003",
       "reference_invoice_id": "INV-Q3-0003",
-      "expected_credit": "1000.00",
-      "paid_credit": "850.00",
+      "expected_credit": "500.00",
+      "paid_credit": "350.00",
       "recovery": "150.00"
     },
     {
       "credit_memo_id": "CM-Q3-26-004",
       "reference_invoice_id": "INV-Q3-0004",
-      "expected_credit": "1000.00",
-      "paid_credit": "825.00",
+      "expected_credit": "500.00",
+      "paid_credit": "325.00",
       "recovery": "175.00"
     },
     {
       "credit_memo_id": "CM-Q3-26-005",
       "reference_invoice_id": "INV-Q3-0005",
-      "expected_credit": "1000.00",
-      "paid_credit": "800.00",
+      "expected_credit": "500.00",
+      "paid_credit": "300.00",
       "recovery": "200.00"
     }
   ],

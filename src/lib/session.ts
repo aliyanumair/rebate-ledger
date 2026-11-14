@@ -2,7 +2,11 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { cookies } from 'next/headers';
 
 const COOKIE = 'rebate_session';
-const secret = () => process.env.SESSION_SECRET || 'local-demo-session-secret-change-in-production';
+const secret = () => {
+  if (process.env.SESSION_SECRET) return process.env.SESSION_SECRET;
+  if (process.env.NODE_ENV !== 'production') return 'local-demo-session-secret-change-in-production';
+  throw new Error('SESSION_SECRET is required in production. Configure a unique random secret in the deployment environment.');
+};
 const signature = (payload: string) => createHmac('sha256', secret()).update(payload).digest('hex');
 
 export type Role = 'admin' | 'controller';

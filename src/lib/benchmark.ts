@@ -1,25 +1,12 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import Decimal from 'decimal.js';
 import { reconcile, reconcileCreditStatement, type PurchaseTransaction, type RebateTier, type SupplierPayment } from './reconciliation';
+import { parseCsv } from './csv';
 
-function parseCsv(text: string): Record<string, string>[] {
-  const rows: string[][] = [];
-  let cells: string[] = [], cell = '', quoted = false;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    if (ch === '"' && quoted && text[i + 1] === '"') { cell += '"'; i += 1; }
-    else if (ch === '"') quoted = !quoted;
-    else if (ch === ',' && !quoted) { cells.push(cell); cell = ''; }
-    else if ((ch === '\r' || ch === '\n') && !quoted) {
-      if (ch === '\r' && text[i + 1] === '\n') i += 1;
-      cells.push(cell); cell = '';
-      if (cells.some((value) => value.length > 0)) rows.push(cells);
-      cells = [];
-    } else cell += ch;
-  }
-  if (cell.length || cells.length) { cells.push(cell); rows.push(cells); }
-  const [headers, ...records] = rows;
-  return records.map((row) => Object.fromEntries((headers ?? []).map((header, index) => [header, row[index] ?? ''])));
+function records(text: string): Record<string, string>[] {
+  const table = parseCsv(text);
+  return table.rows.map(row => Object.fromEntries(table.headers.map((header, index) => [header, row[index] ?? ''])));
 }
 
 const BENCHMARK_DIR = path.join(process.cwd(), 'data/benchmark/sample_set_1');
@@ -44,13 +31,13 @@ export async function loadBenchmarkAudit() {
   ]);
   const rawRules = JSON.parse(rulesJson) as BenchmarkRules;
   const groundTruth = JSON.parse(groundTruthJson) as BenchmarkGroundTruth;
-  const purchases = parseCsv(purchaseCsv).map((row): PurchaseTransaction => ({
+  const purchases = records(purchaseCsv).map((row): PurchaseTransaction => ({
     txnId: row.txn_id, invoiceId: row.txn_id, date: row.date, vendorName: row.vendor_name,
     sku: row.sku, description: row.description, qty: row.qty, unitCost: row.unit_cost,
     extendedCost: row.extended_cost, customerName: row.customer_name, projectCode: row.project_code,
     txnType: row.txn_type,
   }));
-  const claims = parseCsv(creditCsv);
+  const claims = records(creditCsv);
   const statement = reconcileCreditStatement(claims.map((row) => ({
     creditId: row.credit_memo_id, date: row.period, creditType: 'Quarterly rebate credit',
     eligibleSpendBasis: row.eligible_spend_basis, ratePercent: row.rebate_rate.replace('%', ''),
@@ -81,7 +68,7 @@ export async function loadBenchmarkAudit() {
   const underpayments = new Map<string, string>((groundTruth.planted_underpayments as Array<{ reference_invoice_id: string; recovery: string }>).map((row) => [row.reference_invoice_id, row.recovery]));
   const payments: SupplierPayment[] = firstPass.lines.filter((line) => Number(line.rebateEarned) > 0).map((line) => ({
     txnId: line.txnId,
-    amount: (Number(line.rebateEarned) - Number(underpayments.get(line.txnId) ?? '0.00')).toFixed(2),
+    amount: new Decimal(line.rebateEarned).minus(underpayments.get(line.txnId) ?? '0.00').toFixed(2),
   }));
   return { result: reconcile(purchases, rules, payments), statement, groundTruth, rules };
 }

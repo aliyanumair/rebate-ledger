@@ -1,0 +1,47 @@
+name: Live site upload health bot
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-site-upload-health
+  cancel-in-progress: true
+
+jobs:
+  live-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Test live upload and reconciliation
+        env:
+          LIVE_URL: ${{ secrets.LIVE_URL }}
+          DEMO_EMAIL: ${{ secrets.DEMO_EMAIL }}
+          DEMO_PASSWORD: ${{ secrets.DEMO_PASSWORD }}
+        run: npm run test:e2e:live
+      - name: Upload Playwright trace on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-site-playwright-trace
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7

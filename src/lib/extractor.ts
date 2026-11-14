@@ -1,4 +1,5 @@
 import Decimal from "decimal.js";
+import { DOMMatrix as NodeDOMMatrix, ImageData as NodeImageData, Path2D as NodePath2D } from "@napi-rs/canvas";
 
 /** Deterministic PDF-to-rule extraction. This module extracts citations and rules only; it never calculates rebates. */
 export type RuleCitation = { source: string; pageNumber: number | null; clauseId: string | null; excerpt: string };
@@ -39,6 +40,7 @@ function cite(line: LocatedLine, source: string): RuleCitation { return { source
 function parseTiers(lines: LocatedLine[], source: string): RebateTierRule[] {
   const result: RebateTierRule[] = [];
   const rangeRe = new RegExp(String.raw`(${MONEY})\s*(?:-|to|through|–|—)\s*(${MONEY})[^\n%]{0,100}?([\d.]+)\s*%`, "i");
+  const aboveRe = new RegExp(String.raw`(${MONEY})\s+(?:and above|or more|or greater|and over)\s*([\d.]+)\s*%`, "gi");
   const atRe = new RegExp(String.raw`(?:at|above|over|reach(?:es)?|spend(?: of)?|minimum(?: spend)?(?: of)?|threshold(?: of)?|or more|or greater|and above)\s*(${MONEY})[^\n%]{0,100}?([\d.]+)\s*%`, "i");
   const spendOrMoreRe = new RegExp(String.raw`spend\s+(?:of\s+)?(${MONEY})\s+(?:or more|or greater|and above|and over)[^\n%]{0,80}?([\d.]+)\s*%`, "i");
   const reverseRe = new RegExp(String.raw`([\d.]+)\s*%[^\n$]{0,100}?(?:at|above|over|reach(?:es)?|minimum(?: spend)?(?: of)?|threshold(?: of)?)\s*(${MONEY})`, "i");
@@ -46,12 +48,23 @@ function parseTiers(lines: LocatedLine[], source: string): RebateTierRule[] {
     if (!/(rebate|tier|volume|purchase|spend|qualif|earned)/i.test(line.text)) continue;
     const ranges = [...line.text.matchAll(new RegExp(rangeRe.source, "gi"))];
     const matches: Array<{ minimum: string; maximum: string | null; rate: string }> = ranges.map((m) => ({ minimum: toMoney(m[1]), maximum: toMoney(m[2]), rate: m[3] }));
-    const thresholds = [...line.text.matchAll(new RegExp(atRe.source, "gi"))];
+    const aboveTiers = [...line.text.matchAll(new RegExp(aboveRe.source, "gi"))].map((m) => ({ minimum: toMoney(m[1]), maximum: null, rate: m[2] }));
+    matches.push(...aboveTiers.filter((tier) => !matches.some((existing) => existing.minimum === tier.minimum && existing.rate === tier.rate)));
     const spendOrMore = line.text.match(spendOrMoreRe);
-    const reversed = [...line.text.matchAll(new RegExp(reverseRe.source, "gi"))];
-    matches.push(...thresholds.map((m) => ({ minimum: toMoney(m[1]), maximum: null, rate: m[2] })).filter((threshold) => !matches.some((range) => range.minimum === threshold.minimum && range.rate === threshold.rate)));
-    if (spendOrMore) matches.push({ minimum: toMoney(spendOrMore[1]), maximum: null, rate: spendOrMore[2] });
-    matches.push(...reversed.map((m) => ({ minimum: toMoney(m[2]), maximum: null, rate: m[1] })));
+    if (spendOrMore) {
+      const tier = { minimum: toMoney(spendOrMore[1]), maximum: null, rate: spendOrMore[2] };
+      if (!matches.some((existing) => existing.minimum === tier.minimum && existing.rate === tier.rate)) matches.push(tier);
+    }
+    // Only try broad prose patterns when the line did not already yield explicit table tiers.
+    // This prevents explanatory amounts later on the same PDF text line from being read as rates.
+    if (matches.length === 0) {
+      const thresholds = [...line.text.matchAll(new RegExp(atRe.source, "gi"))];
+      matches.push(...thresholds.map((m) => ({ minimum: toMoney(m[1]), maximum: null, rate: m[2] })));
+      if (matches.length === 0) {
+        const reversed = [...line.text.matchAll(new RegExp(reverseRe.source, "gi"))];
+        matches.push(...reversed.map((m) => ({ minimum: toMoney(m[2]), maximum: null, rate: m[1] })));
+      }
+    }
     const calculation = /retroactive|retroactively|back to (?:the )?first dollar|from (?:the )?first dollar|to dollar one/i.test(line.text) ? "retroactive" : /incremental|only (?:the )?amount above|portion (?:of spend )?above/i.test(line.text) ? "incremental" : "unspecified";
     for (const match of matches) result.push({ minimumSpend: match.minimum, maximumSpend: match.maximum, ratePercent: new Decimal(match.rate).toString(), calculation, citation: cite(line, source) });
   }
@@ -114,6 +127,12 @@ export function extractRulesFromText(text: string, sourceName = "supplier-docume
 export type AssistedRuleExtractor = (text: string, sourceName: string) => Promise<ExtractedSupplierRules>;
 export async function extractRulesFromPdf(buffer: Buffer | Uint8Array, sourceName = "supplier-document.pdf", assistedExtractor?: AssistedRuleExtractor): Promise<ExtractedSupplierRules> {
   if (buffer.length === 0 || Buffer.from(buffer).subarray(0, 5).toString() !== "%PDF-") throw new Error("Unreadable PDF. Use Manual Contract Rule Entry.");
+  // pdfjs-dist reads these globals at module initialization in Netlify's Node function bundle.
+  // The browser build path does not provide them, so install the Node canvas implementations first.
+  const runtime = globalThis as unknown as Record<string, unknown>;
+  runtime.DOMMatrix ??= NodeDOMMatrix;
+  runtime.ImageData ??= NodeImageData;
+  runtime.Path2D ??= NodePath2D;
   const { PDFParse } = await import("pdf-parse");
   const parser = new PDFParse({ data: Buffer.from(buffer) });
   try {

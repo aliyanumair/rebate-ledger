@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { PDFDocument } from "pdf-lib";
 import { loadBenchmarkAudit } from "../src/lib/benchmark";
 import { reconcile, validateReconciliationRules, type PurchaseTransaction, type ReconciliationRules } from "../src/lib/reconciliation";
@@ -7,6 +9,10 @@ import { extractRulesFromPdf, extractRulesFromText } from "../src/lib/extractor"
 
 async function main() {
   const { result } = await loadBenchmarkAudit();
+  const contractPdf = await readFile(path.join(process.cwd(), "data/benchmark/launch_sprint/01_supplier_agreement_demo.pdf"));
+  const extractedContract = await extractRulesFromPdf(contractPdf, "01_supplier_agreement_demo.pdf");
+  assert.equal(extractedContract.tiers.length, 2, "valid Node/server PDF extraction should return both benchmark tiers");
+  assert.deepEqual(extractedContract.tiers.map(tier => [tier.minimumSpend, tier.ratePercent, tier.calculation]), [["0.00", "2", "retroactive"], ["400400.00", "3", "retroactive"]]);
   assert.deepEqual([result.totals.netEligibleSpend, result.totals.rebateEarned, result.totals.supplierPaid, result.totals.unclaimedRecoveryFound, result.totals.quarterEndTierOpportunity], ["399800.00", "7996.00", "7246.00", "750.00", "4004.00"]);
   assert.equal(result.totals.spaEarned, "0.00"); assert.equal(result.opportunities[0].additionalSpendNeeded, "600.00");
   assert.equal(result.totals.unallocatedProgramPayment, "7246.00");

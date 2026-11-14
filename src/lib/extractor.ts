@@ -1,4 +1,5 @@
 import Decimal from "decimal.js";
+import { pathToFileURL } from "node:url";
 import CSSMatrix from "@thednp/dommatrix";
 
 /** Deterministic PDF-to-rule extraction. This module extracts citations and rules only; it never calculates rebates. */
@@ -125,6 +126,15 @@ export function extractRulesFromText(text: string, sourceName = "supplier-docume
 
 /** Optional, explicit seam for a future assisted extractor. API keys alone never cause a network request. */
 export type AssistedRuleExtractor = (text: string, sourceName: string) => Promise<ExtractedSupplierRules>;
+function makePdfWorkerShimUrl(): string {
+  const moduleApi = process.getBuiltinModule("module") as typeof import("node:module") | undefined;
+  if (!moduleApi) throw new Error("PDF worker module resolution is unavailable in this Node runtime.");
+  const require = moduleApi.createRequire(`${process.cwd()}/package.json`);
+  const matrixModule = pathToFileURL(require.resolve("@thednp/dommatrix")).href;
+  const workerModule = pathToFileURL(require.resolve("pdfjs-dist/legacy/build/pdf.worker.mjs")).href;
+  const source = `export let WorkerMessageHandler;const matrix=await import(${JSON.stringify(matrixModule)});globalThis.DOMMatrix??=matrix.default??matrix;({WorkerMessageHandler}=await import(${JSON.stringify(workerModule)}));`;
+  return `data:text/javascript,${encodeURIComponent(source)}`;
+}
 export async function extractRulesFromPdf(buffer: Buffer | Uint8Array, sourceName = "supplier-document.pdf", assistedExtractor?: AssistedRuleExtractor): Promise<ExtractedSupplierRules> {
   if (buffer.length === 0 || Buffer.from(buffer).subarray(0, 5).toString() !== "%PDF-") throw new Error("Unreadable PDF. Use Manual Contract Rule Entry.");
   // pdfjs-dist evaluates a top-level DOMMatrix before its own Node fallback can run.
@@ -132,6 +142,9 @@ export async function extractRulesFromPdf(buffer: Buffer | Uint8Array, sourceNam
   const runtime = globalThis as unknown as Record<string, unknown>;
   runtime.DOMMatrix ??= CSSMatrix;
   const { PDFParse } = await import("pdf-parse");
+  // PDF.js parses in a worker thread in Node. A data-module worker wrapper installs the same
+  // DOMMatrix shim there before importing pdf.worker.mjs; the explicit export preserves fake-worker setup.
+  PDFParse.setWorker(makePdfWorkerShimUrl());
   const parser = new PDFParse({ data: Buffer.from(buffer) });
   try {
     const parsed = await parser.getText();

@@ -24,7 +24,7 @@ test("live demo upload extracts contract rules and reconciles the synthetic benc
   const uploadUrl = new URL("/dashboard/upload", liveUrl).toString();
   await expect.poll(async () => {
     await page.goto(uploadUrl);
-    return page.locator('[data-extraction-runtime="js-dom-matrix-shim"]').count();
+    return page.locator('[data-extraction-runtime="js-dom-matrix-worker-v2"]').count();
   }, { message: "wait for the current push to finish deploying to the live site", timeout: 10 * 60_000, intervals: [5_000, 10_000, 15_000] }).toBe(1);
   await expect(page.getByRole("heading", { name: "Upload supplier files" })).toBeVisible();
 

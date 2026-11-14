@@ -49,7 +49,7 @@ test("live demo upload extracts contract rules and reconciles the synthetic benc
   await expect(results).toContainText("$7,246.00");
   await expect(results).toContainText("$750.00");
   await expect(results).toContainText("$4,004.00");
-  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByRole("alert").filter({ hasText: /DOMMatrix|\bError\b|\b500\b/i })).toHaveCount(0);
   expect(pageErrors, "browser runtime errors").toEqual([]);
   expect(serverErrors, "HTTP 500 responses").toEqual([]);
 

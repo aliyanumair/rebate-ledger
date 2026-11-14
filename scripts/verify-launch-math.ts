@@ -33,7 +33,7 @@ async function main() {
   assert.equal(nearMiss.opportunities[0].additionalSpendNeeded, "4500.00");
   assert.equal(nearMiss.totals.rebateEarned, "1910.00");
   assert.equal(nearMiss.totals.quarterEndTierOpportunity, "2000.00");
-  assert.equal(nearMiss.totals.rebateEarned !== nearMiss.totals.quarterEndTierOpportunity, true, "hypothetical cliff uplift never changes earned rebate totals");
+  assert.notEqual(nearMiss.totals.rebateEarned, nearMiss.totals.quarterEndTierOpportunity, "hypothetical cliff uplift never changes earned rebate totals");
   assert.equal(reconcile([tx("zero", "0")], rules).totals.rebateEarned, "0.00");
   assert.equal(reconcile([tx("return", "-100", "-1", "RMA")], rules).totals.netEligibleSpend, "0.00");
   assert.equal(reconcile([tx("freight", "100", "1", "FREIGHT", "FREIGHT")], rules).totals.netEligibleSpend, "0.00");

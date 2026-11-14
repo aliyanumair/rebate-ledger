@@ -21,7 +21,7 @@ Open http://localhost:3000.
 | Client Controller | controller@acme-hvac.com | Demo1234! |
 | Founder Admin | admin@rebateledger.com | Admin1234! |
 
-The seeded credentials are for local evaluation only. Set a unique `SESSION_SECRET` and replace or disable demo accounts before public production use.
+The seeded credentials are for local evaluation only. For a deployment, set unique `SESSION_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `DEMO_EMAIL`, and `DEMO_PASSWORD` values in the host's secret/environment settings. Production does not fall back to the seeded passwords. `CONTROLLER_PASSWORD` remains supported as a legacy alias for `DEMO_PASSWORD`.
 
 ## Run verification
 

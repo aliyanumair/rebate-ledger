@@ -10,11 +10,17 @@ export async function POST(request: Request) {
   if (typeof b.email !== 'string' || typeof b.password !== 'string' || b.email.length>254 || b.password.length>200) return NextResponse.json({error:'Invalid sign-in request.'},{status:400});
   const email = b.email.trim().toLowerCase();
   const production = process.env.NODE_ENV === 'production';
-  const accounts: Record<string,{password:string|undefined;role:'admin'|'controller'}> = {
-    'controller@acme-hvac.com':{password:process.env.CONTROLLER_PASSWORD || (!production ? 'Demo1234!' : undefined),role:'controller'},
-    'admin@rebateledger.com':{password:process.env.ADMIN_PASSWORD || (!production ? 'Admin1234!' : undefined),role:'admin'},
-  };
-  const a=accounts[email];
+  const demoEmail = (process.env.DEMO_EMAIL || 'controller@acme-hvac.com').trim().toLowerCase();
+  const adminEmail = (process.env.ADMIN_EMAIL || 'admin@rebateledger.com').trim().toLowerCase();
+  const validEmail = (value: string) => /^\S+@\S+\.\S+$/.test(value) && value.length <= 254;
+  if (!validEmail(demoEmail) || !validEmail(adminEmail) || demoEmail === adminEmail) {
+    return NextResponse.json({error:'Sign-in account configuration is invalid.'},{status:503});
+  }
+  const accounts = new Map([
+    [demoEmail, {password:process.env.DEMO_PASSWORD || process.env.CONTROLLER_PASSWORD || (!production ? 'Demo1234!' : undefined),role:'controller' as const}],
+    [adminEmail, {password:process.env.ADMIN_PASSWORD || (!production ? 'Admin1234!' : undefined),role:'admin' as const}],
+  ]);
+  const a=accounts.get(email);
   if (!a?.password) return NextResponse.json({error:'Email or password is incorrect.'},{status:401});
   const expected=Buffer.from(a.password), got=Buffer.from(b.password);
   if(expected.length!==got.length || !timingSafeEqual(expected,got)) return NextResponse.json({error:'Email or password is incorrect.'},{status:401});

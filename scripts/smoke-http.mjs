@@ -9,10 +9,12 @@ import { PDFDocument } from 'pdf-lib';
 const root = process.cwd();
 const port = 37449;
 const base = `http://127.0.0.1:${port}`;
+const adminEmail = 'admin@smoke.example';
+const demoEmail = 'controller@smoke.example';
 const dataDir = mkdtempSync(path.join(os.tmpdir(), 'rebate-ledger-http-'));
 const server = spawn(process.execPath, [path.join(root, 'node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '--port', String(port)], {
   cwd: root,
-  env: { ...process.env, SESSION_SECRET:'smoke-only-secret-at-least-32-characters', CONTROLLER_PASSWORD:'Demo1234!', ADMIN_PASSWORD:'Admin1234!', REBATE_DATA_DIR: dataDir },
+  env: { ...process.env, SESSION_SECRET:'smoke-only-secret-at-least-32-characters', DEMO_EMAIL:demoEmail, DEMO_PASSWORD:'Demo1234!', ADMIN_EMAIL:adminEmail, ADMIN_PASSWORD:'Admin1234!', REBATE_DATA_DIR: dataDir },
   stdio: 'ignore',
 });
 
@@ -39,7 +41,7 @@ try {
 
   const adminLogin = await fetch(`${base}/api/auth/login`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email: 'admin@rebateledger.com', password: 'Admin1234!' }),
+    body: JSON.stringify({ email: adminEmail, password: 'Admin1234!' }),
   });
   assert.equal(adminLogin.status, 200);
   const adminCookie = adminLogin.headers.get('set-cookie')?.split(';')[0];
@@ -47,12 +49,12 @@ try {
 
   const controllerLogin = await fetch(`${base}/api/auth/login`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email: 'controller@acme-hvac.com', password: 'Demo1234!' }),
+    body: JSON.stringify({ email: demoEmail, password: 'Demo1234!' }),
   });
   assert.equal(controllerLogin.status, 200);
   const controllerCookie = controllerLogin.headers.get('set-cookie')?.split(';')[0];
   assert.ok(controllerCookie);
-  const sameOriginLogin = await fetch(`${base}/api/auth/login`, {method:'POST',headers:{'content-type':'application/json',Origin:base},body:JSON.stringify({email:'controller@acme-hvac.com',password:'Demo1234!'})});
+  const sameOriginLogin = await fetch(`${base}/api/auth/login`, {method:'POST',headers:{'content-type':'application/json',Origin:base},body:JSON.stringify({email:demoEmail,password:'Demo1234!'})});
   assert.equal(sameOriginLogin.status, 200, 'same-origin browser login should not be rejected behind the Next server');
   assert.equal((await fetch(`${base}/api/auth/logout`, {method:'POST',headers:{Origin:'https://attacker.example',Cookie:controllerCookie}})).status, 403, 'cross-origin logout mutation should be rejected');
   assert.equal((await status('/api/audits', controllerCookie)).status, 403, 'intake queue must be admin-only');

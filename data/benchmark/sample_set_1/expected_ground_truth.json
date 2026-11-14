@@ -1,0 +1,68 @@
+{
+  "benchmark_id": "sample_set_1",
+  "synthetic_only": true,
+  "currency": "USD",
+  "period": "Q3 2026",
+  "qualifying_purchase_rows": 1430,
+  "gross_eligible_spend": "199900.00",
+  "tier": {
+    "rate": "4.00%",
+    "threshold": "100000.00",
+    "next_threshold": "200000.00",
+    "next_rate": "6.00%",
+    "gap_to_next_tier": "100.00",
+    "rebate_at_current_tier": "7996.00",
+    "rebate_at_next_tier": "12000.00",
+    "quarter_end_tier_opportunity": "4004.00"
+  },
+  "rebate_earned": "7996.00",
+  "supplier_paid": "7246.00",
+  "unclaimed_recovery_found": "750.00",
+  "variance": "750.00",
+  "planted_underpayments": [
+    {
+      "credit_memo_id": "CM-Q3-26-001",
+      "reference_invoice_id": "INV-Q3-0001",
+      "expected_credit": "1000.00",
+      "paid_credit": "900.00",
+      "recovery": "100.00"
+    },
+    {
+      "credit_memo_id": "CM-Q3-26-002",
+      "reference_invoice_id": "INV-Q3-0002",
+      "expected_credit": "1000.00",
+      "paid_credit": "875.00",
+      "recovery": "125.00"
+    },
+    {
+      "credit_memo_id": "CM-Q3-26-003",
+      "reference_invoice_id": "INV-Q3-0003",
+      "expected_credit": "1000.00",
+      "paid_credit": "850.00",
+      "recovery": "150.00"
+    },
+    {
+      "credit_memo_id": "CM-Q3-26-004",
+      "reference_invoice_id": "INV-Q3-0004",
+      "expected_credit": "1000.00",
+      "paid_credit": "825.00",
+      "recovery": "175.00"
+    },
+    {
+      "credit_memo_id": "CM-Q3-26-005",
+      "reference_invoice_id": "INV-Q3-0005",
+      "expected_credit": "1000.00",
+      "paid_credit": "800.00",
+      "recovery": "200.00"
+    }
+  ],
+  "planted_recovery_total": "750.00",
+  "payout_reconciliation": "rebate_earned - supplier_paid = planted_recovery_total",
+  "claim_deadline": "2026-11-14",
+  "citations": {
+    "tier": "carrier_hvac_2026_rebate_agreement.pdf, page 1, Clause 2",
+    "freight_exclusion": "page 2, Clause 4.2",
+    "deadline": "page 2, Clause 7.1"
+  },
+  "statement_mapping_note": "Each CM-Q3-26-001 through CM-Q3-26-005 references the matching ERP transaction INV-Q3-0001 through INV-Q3-0005. Each reference invoice has exactly $25,000.00 of eligible spend; at 4%, its expected credit is $1,000.00. The statement's five planted short payments total $750.00."
+}

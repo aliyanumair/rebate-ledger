@@ -10,9 +10,11 @@
     "typecheck": "tsc --noEmit",
     "test:reconciliation": "node scripts/run-verification.mjs",
     "test:routes": "node scripts/smoke-http.mjs",
-    "generate:benchmark": "python3 data/benchmark/sample_set_1/generate_benchmark.py"
+    "generate:benchmark": "python3 data/benchmark/sample_set_1/generate_benchmark.py",
+    "test": "npm run test:reconciliation && tsx scripts/verify-launch-math.ts && tsx scripts/verify-export-fidelity.ts"
   },
   "dependencies": {
+    "@netlify/blobs": "^11.1.9",
     "decimal.js": "^10.6.0",
     "exceljs": "^4.4.0",
     "lucide-react": "^0.468.0",

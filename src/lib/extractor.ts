@@ -1,3 +1,5 @@
+import Decimal from "decimal.js";
+
 /** Deterministic PDF-to-rule extraction. This module extracts citations and rules only; it never calculates rebates. */
 export type RuleCitation = { source: string; pageNumber: number | null; clauseId: string | null; excerpt: string };
 export type RebateTierRule = { minimumSpend: string; maximumSpend: string | null; ratePercent: string; calculation: "retroactive" | "incremental" | "unspecified"; citation: RuleCitation };
@@ -12,9 +14,10 @@ const MONEY = String.raw`(?:\$\s*)?\d[\d,]*(?:\.\d{1,2})?\s*(?:k|thousand|millio
 function toMoney(value: string): string {
   const raw = value.trim().replace(/^\$\s*/, "").replace(/,/g, "");
   const suffix = raw.match(/(k|thousand|million|m)$/i)?.[1]?.toLowerCase();
-  const number = Number.parseFloat(raw.replace(/\s*(k|thousand|million|m)$/i, ""));
+  const number = new Decimal(raw.replace(/\s*(k|thousand|million|m)$/i, ""));
   const factor = suffix === "k" || suffix === "thousand" ? 1_000 : suffix === "m" || suffix === "million" ? 1_000_000 : 1;
-  return Number.isFinite(number) ? (number * factor).toFixed(2) : "0.00";
+  if (!number.isFinite()) throw new Error("Invalid contract monetary value.");
+  return number.mul(factor).toFixed(2);
 }
 function splitPages(text: string): LocatedLine[] {
   let pageNumber: number | null = null, clauseId: string | null = null;
@@ -50,9 +53,9 @@ function parseTiers(lines: LocatedLine[], source: string): RebateTierRule[] {
     if (spendOrMore) matches.push({ minimum: toMoney(spendOrMore[1]), maximum: null, rate: spendOrMore[2] });
     matches.push(...reversed.map((m) => ({ minimum: toMoney(m[2]), maximum: null, rate: m[1] })));
     const calculation = /retroactive|retroactively|back to (?:the )?first dollar|from (?:the )?first dollar|to dollar one/i.test(line.text) ? "retroactive" : /incremental|only (?:the )?amount above|portion (?:of spend )?above/i.test(line.text) ? "incremental" : "unspecified";
-    for (const match of matches) result.push({ minimumSpend: match.minimum, maximumSpend: match.maximum, ratePercent: Number.parseFloat(match.rate).toString(), calculation, citation: cite(line, source) });
+    for (const match of matches) result.push({ minimumSpend: match.minimum, maximumSpend: match.maximum, ratePercent: new Decimal(match.rate).toString(), calculation, citation: cite(line, source) });
   }
-  return [...new Map(result.map(x => [`${x.minimumSpend}|${x.maximumSpend ?? ""}|${x.ratePercent}`, x])).values()].sort((a,b) => Number(a.minimumSpend)-Number(b.minimumSpend));
+  return [...new Map(result.map(x => [`${x.minimumSpend}|${x.maximumSpend ?? ""}|${x.ratePercent}`, x])).values()].sort((a,b) => new Decimal(a.minimumSpend).cmp(b.minimumSpend));
 }
 function parseExclusions(lines: LocatedLine[], source: string): ExclusionRule[] {
   const out: ExclusionRule[] = [];
@@ -110,11 +113,13 @@ export function extractRulesFromText(text: string, sourceName = "supplier-docume
 /** Optional, explicit seam for a future assisted extractor. API keys alone never cause a network request. */
 export type AssistedRuleExtractor = (text: string, sourceName: string) => Promise<ExtractedSupplierRules>;
 export async function extractRulesFromPdf(buffer: Buffer | Uint8Array, sourceName = "supplier-document.pdf", assistedExtractor?: AssistedRuleExtractor): Promise<ExtractedSupplierRules> {
+  if (buffer.length === 0 || Buffer.from(buffer).subarray(0, 5).toString() !== "%PDF-") throw new Error("Unreadable PDF. Use Manual Contract Rule Entry.");
   const { PDFParse } = await import("pdf-parse");
   const parser = new PDFParse({ data: Buffer.from(buffer) });
   try {
     const parsed = await parser.getText();
     const text = parsed.pages.map(page => `[[PAGE ${page.num}]]\n${page.text}`).join("\n");
+    if (parsed.pages.every(page => page.text.trim().length < 20)) throw new Error("Scanned or unreadable PDF. Use Manual Contract Rule Entry and verify against the source.");
     return assistedExtractor ? assistedExtractor(text, sourceName) : extractRulesFromText(text, sourceName);
   } finally {
     await parser.destroy();

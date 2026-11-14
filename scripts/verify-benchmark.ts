@@ -72,7 +72,8 @@ assert.equal(statement.totals.paidCredit, groundTruth.supplier_paid);
 assert.equal(statement.lines.filter((line) => line.classification === 'UNDERPAID_CREDIT').length, 5);
 
 const rules = {
-  supplierName: benchmarkRules.supplier,
+  verification: { status: "verified" as const, verifiedBy: "Synthetic fixture reviewer", ruleVersion: "fixture-v1" },
+    supplierName: benchmarkRules.supplier,
   programName: benchmarkRules.program,
   tiers: benchmarkRules.tiers.map((tier): RebateTier => ({
     minSpend: tier.minimum_spend,

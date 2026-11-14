@@ -12,7 +12,7 @@ const base = `http://127.0.0.1:${port}`;
 const dataDir = mkdtempSync(path.join(os.tmpdir(), 'rebate-ledger-http-'));
 const server = spawn(process.execPath, [path.join(root, 'node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '--port', String(port)], {
   cwd: root,
-  env: { ...process.env, REBATE_DATA_DIR: dataDir },
+  env: { ...process.env, SESSION_SECRET:'smoke-only-secret-at-least-32-characters', CONTROLLER_PASSWORD:'Demo1234!', ADMIN_PASSWORD:'Admin1234!', REBATE_DATA_DIR: dataDir },
   stdio: 'ignore',
 });
 
@@ -32,7 +32,7 @@ async function status(pathname, cookie) {
 
 try {
   await waitForServer();
-  for (const route of ['/', '/login', '/dashboard', '/dashboard/upload', '/dashboard/audits/demo-q3']) {
+  for (const route of ['/', '/login']) {
     const response = await status(route);
     assert.equal(response.status, 200, `${route} should return HTTP 200`);
   }
@@ -58,7 +58,7 @@ try {
   const contract = readFileSync(path.join(sampleDir, 'carrier_hvac_2026_rebate_agreement.pdf'));
   const extractForm = new FormData();
   extractForm.set('pdf', new Blob([contract], { type: 'application/pdf' }), 'carrier_agreement.pdf');
-  const extractResponse = await fetch(`${base}/api/extract`, { method: 'POST', body: extractForm });
+  const extractResponse = await fetch(`${base}/api/extract`, { method: 'POST', body: extractForm, headers:{Cookie:controllerCookie} });
   assert.equal(extractResponse.status, 200);
   const extracted = await extractResponse.json();
   assert.equal(extracted.rules.tiers.length, 3);

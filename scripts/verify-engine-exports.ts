@@ -15,12 +15,13 @@ async function main() {
   if (statement.totals.recoveryFound !== "750.00") throw new Error(`Expected exact $750.00 statement recovery, got $${statement.totals.recoveryFound}`);
 
   const rules: ReconciliationRules = {
+    verification: { status: "verified" as const, verifiedBy: "Synthetic fixture reviewer", ruleVersion: "fixture-v1" },
     supplierName: "Carrier HVAC",
     programName: "2026 quarterly rebate",
     tiers: [
-      { minSpend: "50000", ratePercent: "2", citation: "Clause 3.1" },
-      { minSpend: "100000", ratePercent: "4", citation: "Clause 3.1" },
-      { minSpend: "200000", ratePercent: "6", citation: "Clause 3.1" },
+      { minSpend: "50000", ratePercent: "2", mode: "retroactive", citation: "Clause 3.1" },
+      { minSpend: "100000", ratePercent: "4", mode: "retroactive", citation: "Clause 3.1" },
+      { minSpend: "200000", ratePercent: "6", mode: "retroactive", citation: "Clause 3.1" },
     ],
     eligibleSkus: ["ABC100"],
     excludedSkus: ["EXCL1"],

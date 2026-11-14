@@ -8,3 +8,5 @@ coverage/
 .verification/
 *.tsbuildinfo
 npm-debug.log*
+.artifacts/
+artifacts/

@@ -1,17 +1,26 @@
+import { timingSafeEqual } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { createSessionToken, sessionCookieName } from '@/lib/session';
-
-const accounts: Record<string, { password: string; role: 'admin' | 'controller' }> = {
-  'controller@acme-hvac.com': { password: 'Demo1234!', role: 'controller' },
-  'admin@rebateledger.com': { password: 'Admin1234!', role: 'admin' },
-};
-
+import { guardRequest } from '@/lib/request-guard';
 export async function POST(request: Request) {
-  const body = await request.json().catch(() => null) as { email?: string; password?: string } | null;
-  const email = body?.email?.trim().toLowerCase() || '';
-  const account = accounts[email];
-  if (!account || body?.password !== account.password) return NextResponse.json({ error: 'Email or password is incorrect.' }, { status: 401 });
-  const response = NextResponse.json({ ok: true, email, role: account.role });
-  response.cookies.set(sessionCookieName, createSessionToken(email, account.role), { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax', path: '/', maxAge: 7 * 86400 });
-  return response;
+  const rejected = guardRequest(request,10); if(rejected) return rejected;
+  const body: unknown = await request.json().catch(()=>null);
+  if (!body || typeof body !== 'object') return NextResponse.json({error:'Invalid sign-in request.'},{status:400});
+  const b = body as Record<string,unknown>;
+  if (typeof b.email !== 'string' || typeof b.password !== 'string' || b.email.length>254 || b.password.length>200) return NextResponse.json({error:'Invalid sign-in request.'},{status:400});
+  const email = b.email.trim().toLowerCase();
+  const production = process.env.NODE_ENV === 'production';
+  const accounts: Record<string,{password:string|undefined;role:'admin'|'controller'}> = {
+    'controller@acme-hvac.com':{password:process.env.CONTROLLER_PASSWORD || (!production ? 'Demo1234!' : undefined),role:'controller'},
+    'admin@rebateledger.com':{password:process.env.ADMIN_PASSWORD || (!production ? 'Admin1234!' : undefined),role:'admin'},
+  };
+  const a=accounts[email];
+  if (!a?.password) return NextResponse.json({error:'Email or password is incorrect.'},{status:401});
+  const expected=Buffer.from(a.password), got=Buffer.from(b.password);
+  if(expected.length!==got.length || !timingSafeEqual(expected,got)) return NextResponse.json({error:'Email or password is incorrect.'},{status:401});
+  try {
+    const response=NextResponse.json({ok:true,email,role:a.role});
+    response.cookies.set(sessionCookieName,createSessionToken(email,a.role),{httpOnly:true,secure:production,sameSite:'lax',path:'/',maxAge:8*3600});
+    return response;
+  } catch { return NextResponse.json({error:'Sign-in is not configured for this deployment.'},{status:503}); }
 }

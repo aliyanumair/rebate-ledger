@@ -47,6 +47,8 @@ export interface SpaRule {
 export interface ReconciliationRules {
   supplierName: string;
   programName: string;
+  verification?: { status: "verified" | "unverified"; verifiedBy: string; ruleVersion: string };
+  opportunityMethod?: "incremental-total-rebate" | "rate-difference-at-target";
   tiers: RebateTier[];
   eligibleSkus?: string[];
   excludedSkus?: string[];
@@ -149,7 +151,12 @@ export interface ReconciliationResult {
   clauseCitations: string[];
 }
 
-const money = (v: Decimal.Value): Decimal => new Decimal(v || 0).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+const money = (v: Decimal.Value): Decimal => {
+  if (v === "" || v === undefined || v === null) throw new Error("Missing monetary value.");
+  const amount = new Decimal(v);
+  if (!amount.isFinite()) throw new Error("Invalid monetary value.");
+  return amount.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+};
 const str = (v: Decimal): string => v.toFixed(2);
 
 export function normalizeSku(value: string): string {
@@ -201,7 +208,9 @@ function opportunityFor(spend: Decimal, rules: ReconciliationRules): TierOpportu
   if (!next) return [];
   const target = asDecimal(next.minSpend);
   const needed = target.minus(spend);
-  const uplift = rebateForSpend(target, tiers).minus(rebateForSpend(spend, tiers));
+  const uplift = rules.opportunityMethod === "rate-difference-at-target"
+    ? target.mul(asDecimal(next.ratePercent).minus(effectiveRate(spend, tiers))).div(100)
+    : rebateForSpend(target, tiers).minus(rebateForSpend(spend, tiers));
   return [{
     currentSpend: str(money(spend)),
     currentRatePercent: effectiveRate(spend, tiers).toDecimalPlaces(4).toFixed(4),
@@ -219,16 +228,41 @@ function allocateExact(total: Decimal, weights: Decimal[]): Decimal[] {
   const sum = weights.reduce((a, b) => a.plus(b), new Decimal(0));
   if (sum.lte(0)) return weights.map(() => new Decimal(0));
   const centsTotal = total.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-  const allocations: Decimal[] = [];
-  let allocated = new Decimal(0);
-  weights.forEach((weight, index) => {
-    const part = index === weights.length - 1
-      ? centsTotal.minus(allocated)
-      : centsTotal.mul(weight).div(sum).toDecimalPlaces(2, Decimal.ROUND_DOWN);
-    allocations.push(part);
-    allocated = allocated.plus(part);
-  });
+  const exact = weights.map(weight => centsTotal.mul(weight).div(sum));
+  const allocations = exact.map(part => part.toDecimalPlaces(2, Decimal.ROUND_DOWN));
+  const allocated = allocations.reduce((total, part) => total.plus(part), new Decimal(0));
+  const order = exact.map((part, index) => ({ index, remainder: part.minus(allocations[index]) }))
+    .sort((a, b) => b.remainder.cmp(a.remainder) || a.index - b.index);
+  let remainder = centsTotal.minus(allocated);
+  for (const item of order) {
+    if (remainder.lte(0)) break;
+    allocations[item.index] = allocations[item.index].plus("0.01");
+    remainder = remainder.minus("0.01");
+  }
   return allocations;
+}
+
+/** Fail closed before any accounting arithmetic. Verification is explicit, never extraction confidence. */
+export function validateReconciliationRules(rules: ReconciliationRules): void {
+  if (!rules || typeof rules !== "object" || !rules.supplierName?.trim() || !rules.programName?.trim()) throw new Error("Supplier and program are required.");
+  if (rules.verification?.status !== "verified" || !rules.verification.verifiedBy?.trim() || !rules.verification.ruleVersion?.trim()) throw new Error("Reconciliation blocked: contract rules must be explicitly verified with reviewer and version.");
+  if (!Array.isArray(rules.tiers) || rules.tiers.length === 0) throw new Error("At least one verified tier is required.");
+  let mode: string | undefined;
+  const thresholds = new Set<string>();
+  for (const tier of rules.tiers) {
+    if (!tier || tier.minSpend === "" || tier.ratePercent === "" || tier.minSpend === undefined || tier.ratePercent === undefined) throw new Error("Tier spend and rate are required.");
+    const floor = asDecimal(tier.minSpend), rate = asDecimal(tier.ratePercent);
+    if (floor.lt(0) || rate.lt(0) || rate.gt(100)) throw new Error("Tier spend must be nonnegative and rate must be between 0 and 100.");
+    if (tier.mode !== "retroactive" && tier.mode !== "incremental") throw new Error("Every tier must explicitly specify retroactive or incremental calculation.");
+    if (mode && mode !== tier.mode) throw new Error("Conflicting tier calculation methods require review.");
+    mode = tier.mode;
+    if (!tier.citation?.trim()) throw new Error("Every tier requires a source clause citation.");
+    if (thresholds.has(floor.toString())) throw new Error("Duplicate tier threshold requires review.");
+    thresholds.add(floor.toString());
+  }
+  for (const spa of rules.spas ?? []) {
+    if (!normalizeSku(spa.sku) || !spa.citation?.trim() || asDecimal(spa.supportedPrice).lt(0) || (spa.standardPrice !== undefined && asDecimal(spa.standardPrice).lt(0))) throw new Error("SPA rules require SKU, nonnegative exact prices, and a citation.");
+  }
 }
 
 /**
@@ -240,6 +274,17 @@ export function reconcile(
   rules: ReconciliationRules,
   payments: SupplierPayment[] = [],
 ): ReconciliationResult {
+  validateReconciliationRules(rules);
+  const transactionIds = new Set<string>();
+  for (const tx of transactions) {
+    if (!tx.txnId?.trim() || transactionIds.has(tx.txnId)) throw new Error("Missing or duplicate transaction ID; reconcile only unique source lines.");
+    transactionIds.add(tx.txnId);
+    if (!tx.sku?.trim() || !tx.date?.trim() || !/^\d{4}-\d{2}-\d{2}$/.test(tx.date) || Number.isNaN(Date.parse(tx.date)) || new Date(tx.date).toISOString().slice(0, 10) !== tx.date) throw new Error(`Invalid SKU or ISO date on ${tx.txnId}.`);
+    for (const value of [tx.qty, tx.unitCost, tx.extendedCost]) {
+      if (value === "" || value === undefined || value === null) throw new Error(`Missing numeric value on ${tx.txnId}.`);
+      asDecimal(value);
+    }
+  }
   const eligible = normalizedSet(rules.eligibleSkus);
   const excluded = normalizedSet(rules.excludedSkus);
   const spaMap = new Map((rules.spas ?? []).map((s) => [normalizeSku(s.sku), s]));
@@ -291,7 +336,9 @@ export function reconcile(
   let programPayment = new Decimal(0);
   for (const payment of payments) {
     const amount = money(payment.amount);
+    if (amount.lt(0)) throw new Error("Negative supplier credits require an explicit adjustment policy.");
     const scope = payment.scope ?? (payment.txnId ? "transaction" : payment.invoiceId ? "invoice" : payment.sku ? "sku" : "program");
+    if ((scope === "transaction" && !transactions.some(tx => tx.txnId === payment.txnId)) || (scope === "invoice" && !transactions.some(tx => tx.invoiceId === payment.invoiceId)) || (scope === "sku" && !transactions.some(tx => normalizeSku(tx.sku) === normalizeSku(payment.sku ?? "")))) throw new Error("Supplier payment scope did not match a source transaction; review required.");
     if (scope === "transaction" && payment.txnId) paymentByTxn.set(payment.txnId, (paymentByTxn.get(payment.txnId) ?? new Decimal(0)).plus(amount));
     else if (scope === "invoice" && payment.invoiceId) invoicePayments.set(payment.invoiceId, (invoicePayments.get(payment.invoiceId) ?? new Decimal(0)).plus(amount));
     else if (scope === "sku" && payment.sku) {
@@ -318,7 +365,7 @@ export function reconcile(
       if (r.spaEarned.gt(0) && recovery.gt(0)) classification = "UNCLAIMED_SPA_ELIGIBLE";
       else if (recovery.gt(0)) classification = "UNDERPAID_TIER_MISMATCH";
     }
-    const rule = r.spa?.citation ?? rules.tiers.find((tier) => rebate.gt(0) && totalEligibleSpend.gte(asDecimal(tier.minSpend)))?.citation;
+    const rule = r.spa?.citation ?? [...rules.tiers].sort((a, b) => asDecimal(b.minSpend).cmp(asDecimal(a.minSpend))).find((tier) => rebate.gt(0) && totalEligibleSpend.gte(asDecimal(tier.minSpend)))?.citation;
     return {
       txnId: r.tx.txnId, date: r.tx.date, invoiceId: r.tx.invoiceId, supplier: r.tx.vendorName,
       sku: r.tx.sku, normalizedSku: r.sku, description: r.tx.description,

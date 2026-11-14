@@ -15,8 +15,8 @@
     "test": "npm run test:reconciliation && tsx scripts/verify-launch-math.ts && tsx scripts/verify-export-fidelity.ts"
   },
   "dependencies": {
-    "@napi-rs/canvas": "0.1.80",
     "@netlify/blobs": "^11.1.9",
+    "@thednp/dommatrix": "3.1.2",
     "decimal.js": "^10.6.0",
     "exceljs": "^4.4.0",
     "lucide-react": "^0.468.0",

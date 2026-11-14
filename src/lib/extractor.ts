@@ -1,5 +1,5 @@
 import Decimal from "decimal.js";
-import { DOMMatrix as NodeDOMMatrix, ImageData as NodeImageData, Path2D as NodePath2D } from "@napi-rs/canvas";
+import CSSMatrix from "@thednp/dommatrix";
 
 /** Deterministic PDF-to-rule extraction. This module extracts citations and rules only; it never calculates rebates. */
 export type RuleCitation = { source: string; pageNumber: number | null; clauseId: string | null; excerpt: string };
@@ -127,12 +127,10 @@ export function extractRulesFromText(text: string, sourceName = "supplier-docume
 export type AssistedRuleExtractor = (text: string, sourceName: string) => Promise<ExtractedSupplierRules>;
 export async function extractRulesFromPdf(buffer: Buffer | Uint8Array, sourceName = "supplier-document.pdf", assistedExtractor?: AssistedRuleExtractor): Promise<ExtractedSupplierRules> {
   if (buffer.length === 0 || Buffer.from(buffer).subarray(0, 5).toString() !== "%PDF-") throw new Error("Unreadable PDF. Use Manual Contract Rule Entry.");
-  // pdfjs-dist reads these globals at module initialization in Netlify's Node function bundle.
-  // The browser build path does not provide them, so install the Node canvas implementations first.
+  // pdfjs-dist evaluates a top-level DOMMatrix before its own Node fallback can run.
+  // A pure JS shim keeps text extraction portable across Netlify's Linux runtime and local hosts.
   const runtime = globalThis as unknown as Record<string, unknown>;
-  runtime.DOMMatrix ??= NodeDOMMatrix;
-  runtime.ImageData ??= NodeImageData;
-  runtime.Path2D ??= NodePath2D;
+  runtime.DOMMatrix ??= CSSMatrix;
   const { PDFParse } = await import("pdf-parse");
   const parser = new PDFParse({ data: Buffer.from(buffer) });
   try {

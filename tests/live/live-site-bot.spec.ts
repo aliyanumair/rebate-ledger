@@ -31,8 +31,8 @@ test("live demo upload extracts contract rules and reconciles the synthetic benc
   const contractPath = path.join(process.cwd(), "data/benchmark/launch_sprint/01_supplier_agreement_demo.pdf");
   const purchasePath = path.join(process.cwd(), "data/benchmark/launch_sprint/02_erp_purchase_export_demo.csv");
   await page.getByLabel("Upload supplier audit files").setInputFiles([contractPath, purchasePath]);
-  await expect(page.getByLabel("Tier 2 rebate rate (%)")).toHaveValue("3");
-  await expect(page.getByLabel("Tier 1 rebate rate (%)")).toHaveValue("2");
+  await expect(page.getByLabel("Tier 2 rebate rate")).toHaveValue("3");
+  await expect(page.getByLabel("Tier 1 rebate rate")).toHaveValue("2");
   await expect(page.locator("textarea")).toHaveCount(0);
 
   await page.getByLabel("Supplier name").fill("RebateLedger Live Bot Synthetic Supplier");

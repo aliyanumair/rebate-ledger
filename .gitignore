@@ -11,3 +11,6 @@ npm-debug.log*
 .artifacts/
 artifacts/
 .playwright-cli/
+
+# Local Netlify folder
+.netlify

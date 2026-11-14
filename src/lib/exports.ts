@@ -48,6 +48,13 @@ export async function createAuditWorkbook(result: ReconciliationResult): Promise
     ["Quarter-end tier opportunity", fmt(result.totals.quarterEndTierOpportunity)],
     ["Exception lines", result.totals.exceptionCount],
     ["Contract citations", result.clauseCitations.join("; ")],
+    ["Calculation assumption", "Retroactive tier rate applied to total net eligible spend; supplier payments compared against earned rebate."],
+    ["Exclusion assumption", "Returns/RMAs, freight, shipping, delivery, tax, listed excluded SKUs, and unmatched SKUs are not counted as eligible spend."],
+    ["Excluded freight / tax lines", result.lines.filter(line => line.classification === "EXCLUDED_FREIGHT_OR_TAX").length],
+    ["Excluded return lines", result.lines.filter(line => line.classification === "EXCLUDED_RMA_RETURN").length],
+    ["Excluded SKU lines", result.lines.filter(line => line.classification === "EXCLUDED_NON_QUALIFYING_SKU").length],
+    ["Unmatched SKU review lines", result.lines.filter(line => line.classification === "UNMATCHED_SKU_NEEDS_REVIEW").length],
+    ["Near-miss opportunity is separate", "Quarter-end tier opportunity is an estimate; it is excluded from current-period earned and recovery amounts."],
   ]);
   header(summary);
   summary.getColumn(1).font = { bold: true, color: { argb: `FF${navy}` } };

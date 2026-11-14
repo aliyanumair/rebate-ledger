@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import json
 import random
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from pathlib import Path
 
 from reportlab.lib.pagesizes import letter
@@ -65,8 +65,8 @@ def make_contract() -> None:
         ["## 1. Program term and eligible purchases",
          "This synthetic agreement applies to eligible net purchases invoiced to Acme HVAC Supply from January 1 through December 31, 2026. Quarter-end volume is measured on invoice date. Net eligible purchases exclude returned goods, freight, delivery charges, sales tax, and the excluded parts in Schedule A.",
          "## 2. Quarterly volume rebate tiers",
-         "The quarterly rebate rate applies retroactively to the first eligible dollar once the relevant threshold is reached. Eligible quarterly spend of $50,000.00 through $99,999.99 earns 2%. Spend of $100,000.00 through $199,999.99 earns 4%. Spend of $200,000.00 or more earns 6%. Rates are not incremental or stacked.",
-         "Example: $125,000.00 of eligible quarterly spend earns $5,000.00 (4% × $125,000.00).",
+         "The quarterly rebate rate applies retroactively to the first eligible dollar once the relevant threshold is reached. Eligible quarterly spend of $50,000.00 through $399,999.99 earns 2%. Spend of $400,000.00 or more earns 3%. Rates are not incremental or stacked.",
+         "Example: $125,000.00 of eligible quarterly spend earns $2,500.00 (2% × $125,000.00).",
          "## 3. Returns and credits",
          "Eligible credits and returns reduce the eligible net purchase base in the quarter in which the original invoice is credited. A return transaction itself is never a positive eligible purchase.",
          "## 4. Exclusions",
@@ -90,6 +90,7 @@ def make_spa() -> None:
     rows = ["## Q3 2026 approved item schedule",
             "This synthetic Special Pricing Agreement (SPA) is valid July 1–September 30, 2026. Approved contractors: Apex Mechanical LLC; Blue River Plumbing & HVAC; Northstar Building Services.",
             "Eligible claim quantity is limited to purchases by an approved contractor for an identified project. Claims must reference the invoice and customer/project.",
+            "## Clause 3.2 — SKU-specific supported price schedule",
             "SKU | Standard into-stock cost | Supported SPA price"]
     for i, sku in enumerate(skus, 1):
         standard = Decimal(35 + i * 13).quantize(CENT)
@@ -109,12 +110,12 @@ def make_purchases() -> tuple[Decimal, list[dict[str, str]]]:
     descriptions = ["Variable-speed condenser", "Air handler assembly", "Heat pump outdoor unit", "Evaporator coil", "Thermostat control", "Refrigerant line kit", "Blower motor assembly", "Commercial rooftop unit"]
     records: list[dict[str, str]] = []
     eligible = Decimal("0.00")
-    # 1,430 qualifying product invoices sum to exactly $199,900.00, a planted near miss for the $200k tier.
+    # 1,430 qualifying product invoices sum to exactly $399,800.00, a $200 near miss for the $400k tier.
     for i in range(1, 1431):
         sku = rng.choice(products)
         if i <= 5:
-            # Five transparent $25k invoice bundles let the five planted credit variances
-            # map directly to individual ERP invoices at the contract's 4% rate.
+            # Five transparent $25k invoice bundles let planted credit variances map
+            # directly to ERP invoices at the contract's 2% rate.
             qty = 20
             cost = Decimal("1250.00")
             ext = Decimal("25000.00")
@@ -125,7 +126,7 @@ def make_purchases() -> tuple[Decimal, list[dict[str, str]]]:
         # IDs for the five underpayment references are deliberately part of the ERP export.
         txn_id = f"INV-Q3-{i:04d}"
         if i == 1430:
-            ext = Decimal("199900.00") - eligible
+            ext = Decimal("399800.00") - eligible
             qty = 1
             cost = ext
             ext = (cost * qty).quantize(CENT)
@@ -146,8 +147,8 @@ def make_purchases() -> tuple[Decimal, list[dict[str, str]]]:
             "project_code": f"PRJ-{rng.randrange(1000, 9999)}",
             "txn_type": "INVOICE",
         })
-    if eligible != Decimal("199900.00"):
-        raise AssertionError(f"Synthetic spend is {eligible}, expected 199900.00")
+    if eligible != Decimal("399800.00"):
+        raise AssertionError(f"Synthetic spend is {eligible}, expected 399800.00")
     # 25 RMA returns; 25 freight/tax lines; 20 excluded non-qualifying SKUs.
     for i in range(1431, 1456):
         sku = rng.choice(products)
@@ -175,21 +176,20 @@ def make_purchases() -> tuple[Decimal, list[dict[str, str]]]:
     return eligible, records
 
 
-def make_statement(eligible: Decimal) -> dict[str, object]:
-    earned = (eligible * Decimal("0.04")).quantize(CENT)
+def make_statement(eligible: Decimal, purchase_records: list[dict[str, str]]) -> dict[str, object]:
+    earned = (eligible * Decimal("0.02")).quantize(CENT)
     underpays = [Decimal("100.00"), Decimal("125.00"), Decimal("150.00"), Decimal("175.00"), Decimal("200.00")]
-    expected_splits = [Decimal("1000.00")] * 5
     rows: list[dict[str, str]] = []
-    for i, (exp, short) in enumerate(zip(expected_splits, underpays), 1):
-        rows.append({"credit_memo_id": f"CM-Q3-26-{i:03d}", "reference_invoice_id": f"INV-Q3-{i:04d}",
-                     "period": "Q3 2026", "eligible_spend_basis": money(exp / Decimal("0.04")), "rebate_rate": "4.00%",
-                     "expected_credit": money(exp), "paid_credit": money(exp - short), "variance": money(short), "status": "UNDERPAID"})
-    remainder = earned - sum(expected_splits)
-    # Three correctly paid credit entries complete the quarter's earned rebate.
-    for i, amount in enumerate([Decimal("2000.00"), Decimal("2000.00"), remainder - Decimal("4000.00")], 6):
-        rows.append({"credit_memo_id": f"CM-Q3-26-{i:03d}", "reference_invoice_id": f"INV-Q3-{i+20:04d}",
-                     "period": "Q3 2026", "eligible_spend_basis": money(amount / Decimal("0.04")), "rebate_rate": "4.00%",
-                     "expected_credit": money(amount), "paid_credit": money(amount), "variance": "0.00", "status": "PAID_AS_EXPECTED"})
+    allocated = Decimal("0.00")
+    for i, transaction in enumerate(purchase_records[:1430], 1):
+        basis = Decimal(transaction["extended_cost"])
+        expected = earned - allocated if i == 1430 else (earned * basis / eligible).quantize(CENT, rounding=ROUND_DOWN)
+        allocated += expected
+        short = underpays[i - 1] if i <= len(underpays) else Decimal("0.00")
+        rows.append({"credit_memo_id": f"CM-Q3-26-{i:03d}", "reference_invoice_id": transaction["txn_id"],
+                     "period": "Q3 2026", "eligible_spend_basis": money(basis), "rebate_rate": "2.00%",
+                     "expected_credit": money(expected), "paid_credit": money(expected - short), "variance": money(short),
+                     "status": "UNDERPAID" if short else "PAID_AS_EXPECTED"})
     with (HERE / "manufacturer_q3_credit_statement.csv").open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0]), lineterminator="\n")
         writer.writeheader()
@@ -200,11 +200,11 @@ def make_statement(eligible: Decimal) -> dict[str, object]:
         ["## Account summary",
          "Customer: Acme HVAC Supply (synthetic training account)",
          "Program: 2026 Quarterly Rebate Agreement, Q3 2026",
-         f"Eligible spend reported: ${money(eligible)} | Contract tier: 4% | Rebate earned: ${money(earned)}",
+         f"Eligible spend reported: ${money(eligible)} | Contract tier: 2% | Rebate earned: ${money(earned)}",
          f"Credits paid: ${money(paid)} | Open variance shown by benchmark: ${money(underpaid)}",
          "## Credit detail",
-         "Five credits below were intentionally paid short in this benchmark. The amount in the variance column is the exact planted underpayment."] + [f"{r['credit_memo_id']} | Invoice {r['reference_invoice_id']} | Expected ${r['expected_credit']} | Paid ${r['paid_credit']} | Variance ${r['variance']}" for r in rows],
-        ["## Remaining credits and reconciliation note"] + [f"{r['credit_memo_id']} | Invoice {r['reference_invoice_id']} | Expected ${r['expected_credit']} | Paid ${r['paid_credit']} | Variance ${r['variance']}" for r in rows[5:]] + [
+         "Five credits below were intentionally paid short in this benchmark. The CSV has a statement line for each eligible invoice; all remaining invoice credits were paid as expected."] + [f"{r['credit_memo_id']} | Invoice {r['reference_invoice_id']} | Expected ${r['expected_credit']} | Paid ${r['paid_credit']} | Variance ${r['variance']}" for r in rows[:5]],
+        ["## Statement detail and reconciliation note"] + [f"Sample paid credit: {r['credit_memo_id']} | Invoice {r['reference_invoice_id']} | Expected ${r['expected_credit']} | Paid ${r['paid_credit']}" for r in rows[5:8]] + [
             "This file is invented for software testing. Supplier, customer, transaction, and credit data do not represent real entities or financial records."]
     ])
     gt = {
@@ -214,7 +214,7 @@ def make_statement(eligible: Decimal) -> dict[str, object]:
         "period": "Q3 2026",
         "qualifying_purchase_rows": 1430,
         "gross_eligible_spend": money(eligible),
-        "tier": {"rate": "4.00%", "threshold": "100000.00", "next_threshold": "200000.00", "next_rate": "6.00%", "gap_to_next_tier": "100.00", "rebate_at_current_tier": money(earned), "rebate_at_next_tier": "12000.00", "quarter_end_tier_opportunity": "4004.00"},
+        "tier": {"rate": "2.00%", "threshold": "50000.00", "next_threshold": "400000.00", "next_rate": "3.00%", "gap_to_next_tier": "200.00", "rebate_at_current_tier": money(earned), "rebate_at_next_tier": "12000.00", "quarter_end_tier_opportunity": "4004.00"},
         "rebate_earned": money(earned),
         "supplier_paid": money(paid),
         "unclaimed_recovery_found": money(underpaid),
@@ -224,7 +224,7 @@ def make_statement(eligible: Decimal) -> dict[str, object]:
         "payout_reconciliation": "rebate_earned - supplier_paid = planted_recovery_total",
         "claim_deadline": "2026-11-14",
         "citations": {"tier": "carrier_hvac_2026_rebate_agreement.pdf, page 1, Clause 2", "freight_exclusion": "page 2, Clause 4.2", "deadline": "page 2, Clause 7.1"},
-        "statement_mapping_note": "Each CM-Q3-26-001 through CM-Q3-26-005 references the matching ERP transaction INV-Q3-0001 through INV-Q3-0005. Each reference invoice has exactly $25,000.00 of eligible spend; at 4%, its expected credit is $1,000.00. The statement's five planted short payments total $750.00.",
+        "statement_mapping_note": "Each CM-Q3-26-001 through CM-Q3-26-005 references the matching ERP transaction INV-Q3-0001 through INV-Q3-0005. Each reference invoice has exactly $25,000.00 of eligible spend; at 2%, its expected credit is $500.00. The statement's five planted short payments total $750.00.",
     }
     (HERE / "expected_ground_truth.json").write_text(json.dumps(gt, indent=2) + "\n", encoding="utf-8")
     rules = {
@@ -233,9 +233,8 @@ def make_statement(eligible: Decimal) -> dict[str, object]:
         "period": "Q3 2026",
         "currency": "USD",
         "tiers": [
-            {"minimum_spend": "50000.00", "maximum_spend_exclusive": "100000.00", "rate": "0.02", "method": "retroactive_to_first_dollar"},
-            {"minimum_spend": "100000.00", "maximum_spend_exclusive": "200000.00", "rate": "0.04", "method": "retroactive_to_first_dollar"},
-            {"minimum_spend": "200000.00", "maximum_spend_exclusive": None, "rate": "0.06", "method": "retroactive_to_first_dollar"},
+            {"minimum_spend": "50000.00", "maximum_spend_exclusive": "400000.00", "rate": "0.02", "method": "retroactive_to_first_dollar"},
+            {"minimum_spend": "400000.00", "maximum_spend_exclusive": None, "rate": "0.03", "method": "retroactive_to_first_dollar"},
         ],
         "excluded_skus": ["CARR-CTRL-099", "CARR-FILTER-000", "CARR-LEGACY-404"],
         "excluded_freight_terms": ["freight", "shipping", "handling", "delivery", "fuel surcharge", "sales tax", "tax"],
@@ -261,7 +260,7 @@ def make_statement(eligible: Decimal) -> dict[str, object]:
         },
         "planted_statement_variances": [{
             "credit_memo_id": f"CM-Q3-26-{i:03d}", "reference_invoice_id": f"INV-Q3-{i:04d}",
-            "expected_credit": "1000.00", "paid_credit": money(Decimal("1000.00") - short), "recovery": money(short),
+            "expected_credit": "500.00", "paid_credit": money(Decimal("500.00") - short), "recovery": money(short),
         } for i, short in enumerate(underpays, 1)],
         "statement_totals": {"rebate_earned": money(earned), "supplier_paid": money(paid), "recovery": money(underpaid)},
     }
@@ -275,7 +274,7 @@ def main() -> None:
     make_contract()
     make_spa()
     eligible, records = make_purchases()
-    gt = make_statement(eligible)
+    gt = make_statement(eligible, records)
     print(json.dumps({"generated": len(records), "eligible_spend": money(eligible), "recovery": gt["unclaimed_recovery_found"]}, indent=2))
 
 

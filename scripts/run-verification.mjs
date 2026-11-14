@@ -10,7 +10,7 @@ const compiler = require.resolve('typescript/bin/tsc');
 const args = [
   compiler, '--module', 'commonjs', '--moduleResolution', 'node', '--target', 'ES2022',
   '--esModuleInterop', '--strict', '--skipLibCheck', '--outDir', outDir,
-  'scripts/verify-benchmark.ts', 'src/lib/reconciliation.ts', 'src/lib/exports.ts', 'src/lib/extractor.ts',
+  'scripts/verify-benchmark.ts', 'src/lib/reconciliation.ts', 'src/lib/exports.ts', 'src/lib/extractor.ts', 'src/lib/csv.ts', 'src/lib/rule-validation.ts',
 ];
 try {
   rmSync(outDir, { recursive: true, force: true });

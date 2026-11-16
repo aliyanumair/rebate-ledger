@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/session';
 import { guardRequest } from '@/lib/request-guard';
-import { parseCsvTable, validateColumnMapping } from '@/lib/csv';
+import { parseCsvDecimal, parseCsvTable, validateColumnMapping } from '@/lib/csv';
 import { reconcile, type PurchaseTransaction, type ReconciliationRules, type SupplierPayment } from '@/lib/reconciliation';
 import { saveAudit, saveIntakeFiles } from '@/lib/store';
 
@@ -42,9 +42,9 @@ export async function POST(request: Request) {
     const transactions: PurchaseTransaction[] = parsed.rows.map((row, index) => {
       const txnId = column(row, 'txn_id').trim() || `CSV-LINE-${index + 2}`;
       const invoiceId = column(row, 'invoice_id').trim() || undefined;
-      const qty = column(row, 'qty');
-      const extendedCost = column(row, 'extended_cost');
-      const unitCost = column(row, 'unit_cost') || extendedCost;
+      const qty = parseCsvDecimal(column(row, 'qty'), 'quantity');
+      const extendedCost = parseCsvDecimal(column(row, 'extended_cost'), 'extended cost');
+      const unitCost = column(row, 'unit_cost') ? parseCsvDecimal(column(row, 'unit_cost'), 'unit cost') : extendedCost;
       return {
         txnId, invoiceId, date: column(row, 'date').trim(), vendorName: column(row, 'vendor_name').trim() || supplier,
         sku: column(row, 'sku').trim(), description: column(row, 'description').trim(), qty, unitCost,

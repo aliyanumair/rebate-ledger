@@ -1,0 +1,28 @@
+{
+  "fixture": "Q3 2026 Trane volume rebate plus Watts SPA",
+  "currency": "USD",
+  "sourceTransactionRows": 2024,
+  "expected": {
+    "eligibleVolumeSpend": "264000.00",
+    "volumeRebateEarned": "9900.00",
+    "spaEarned": "3600.00",
+    "totalEarned": "13500.00",
+    "volumePaid": "5940.00",
+    "spaPaid": "1440.00",
+    "totalPaid": "7380.00",
+    "volumeRecovery": "3960.00",
+    "spaRecovery": "2160.00",
+    "totalRecovery": "6120.00"
+  },
+  "traps": {
+    "freightTaxPalletGross": "19400.00",
+    "rmaReturns": "-22850.00",
+    "excludedTraneAccessories": "16200.00",
+    "outsideWindow": "31000.00",
+    "unknownSkuQuarantine": "12500.00",
+    "approvedSpaUnits": 15,
+    "unapprovedSpaUnits": 8,
+    "unknownSkuClassification": "UNMATCHED_SKU_NEEDS_REVIEW"
+  },
+  "provenance": "Independent fixture authoring values. Not calculated from the application reconciliation result."
+}

@@ -2,10 +2,10 @@ import { normalizeSku } from "./reconciliation";
 
 export const CSV_FIELDS = ["txn_id", "invoice_id", "date", "vendor_name", "sku", "description", "qty", "unit_cost", "extended_cost", "customer_name", "project_code", "txn_type"];
 const aliases: Record<string, string[]> = {
-  txn_id: ["txnid", "transactionid", "lineid", "rowid"], invoice_id: ["invoiceid", "invoicenumber", "invoiceno", "invoicenum", "invno", "invnumber"], date: ["date", "transactiondate", "invoicedate", "postingdate", "posteddate"],
+  txn_id: ["txnid", "transactionid", "lineid", "rowid"], invoice_id: ["invoiceid", "invoicenumber", "invoiceno", "invoicenum", "invno", "invnumber"], date: ["date", "transactiondate", "invoicedate", "invdate", "postingdate", "posteddate"],
   vendor_name: ["vendorname", "suppliername", "manufacturer", "vendor", "supplier"], sku: ["suppliersku", "sku", "itemnumber", "itemno", "partnumber", "partno", "productcode", "itemcode"],
-  description: ["description", "productdescription", "itemdescription", "detail"], qty: ["qty", "quantity", "units", "qtyshipped"],
-  unit_cost: ["unitcost", "unitprice", "priceeach", "costperunit"], extended_cost: ["extendedcost", "lineamount", "extamt", "extendedamount", "linetotal", "netamount", "extendedprice"],
+  description: ["description", "productdescription", "itemdescription", "itemdesc", "detail"], qty: ["qty", "quantity", "units", "qtyshipped", "shipqty"],
+  unit_cost: ["unitcost", "unitprice", "priceeach", "costperunit"], extended_cost: ["extendedcost", "lineamount", "extamt", "extnetamt", "extendedamount", "linetotal", "netamount", "extendedprice"],
   customer_name: ["customername", "customer", "customerid", "custid", "soldto", "accountname"], project_code: ["projectcode", "job", "jobnumber", "contract"], txn_type: ["txntype", "transactiontype", "linetype", "doctype", "type"],
 };
 const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -45,7 +45,8 @@ export function parseCsvTable(text: string): { headers: string[]; rows: string[]
   if (headers.length < 2 || headers.some(header => !header) || new Set(headers.map(normalize)).size !== headers.length) throw new Error("CSV headers are missing, empty, or duplicated.");
   if (!rows.length) throw new Error("CSV contains no transaction rows.");
   if (rows.length > 50000) throw new Error("Split files larger than 50,000 rows into audit periods.");
-  if (rows.some(record => record.length !== headers.length)) throw new Error("CSV row width does not match the headers.");
+  const badWidthRow = rows.findIndex(record => record.length !== headers.length);
+  if (badWidthRow !== -1) throw new Error(`CSV row width does not match the headers at data row ${badWidthRow + 1} (${rows[badWidthRow].length} fields; expected ${headers.length}).`);
   return { headers, rows };
 }
 export function validateColumnMapping(mapping: Record<string, string>, headers: string[]): void {
@@ -55,3 +56,14 @@ export function validateColumnMapping(mapping: Record<string, string>, headers: 
   if (new Set(Object.values(mapping).filter(Boolean)).size !== Object.values(mapping).filter(Boolean).length) throw new Error("Each CSV column must map to only one field.");
 }
 export function validMappedSku(value: string): boolean { return Boolean(normalizeSku(value)); }
+
+/** Parse common ERP money/quantity notation without converting through binary floats. */
+export function parseCsvDecimal(value: string, field: string): string {
+  const raw = value.trim();
+  if (!raw) throw new Error(`CSV ${field} value is missing.`);
+  const parenthesized = /^\(.*\)$/.test(raw);
+  const cleaned = raw.replace(/^\((.*)\)$/, "$1").replace(/[,$\s]/g, "");
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(cleaned)) throw new Error(`CSV ${field} value is invalid: ${value}`);
+  const signed = parenthesized ? `-${cleaned.replace(/^[+-]/, "")}` : cleaned;
+  return signed;
+}

@@ -1,5 +1,6 @@
 import Decimal from "decimal.js";
 import PDFParser from "pdf2json";
+import { PDFDocument } from "pdf-lib";
 
 /** Deterministic PDF-to-rule extraction. This module extracts citations and rules only; it never calculates rebates. */
 export type RuleCitation = { source: string; pageNumber: number | null; clauseId: string | null; excerpt: string };
@@ -8,7 +9,7 @@ export type ExclusionRule = { category: "sku" | "freight" | "tax" | "other"; val
 export type SpaSkuRule = { sku: string; standardCost: string | null; supportedPrice: string | null; approvedContractors: string[]; citation: RuleCitation };
 export type SpaClaimbackRule = { description: string; citation: RuleCitation };
 export type ClaimDeadlineRule = { days: number; trigger: string; citation: RuleCitation };
-export type ExtractedSupplierRules = { schemaVersion: 1; source: string; extractionMethod: "deterministic-regex" | "claude-structured"; currency: string; programName?: string | null; supplierName?: string | null; tiers: RebateTierRule[]; exclusions: ExclusionRule[]; spaSkus: SpaSkuRule[]; spaClaimbackRules: SpaClaimbackRule[]; claimDeadlines: ClaimDeadlineRule[]; warnings: string[] };
+export type ExtractedSupplierRules = { schemaVersion: 1; source: string; extractionMethod: "deterministic-regex" | "claude-structured"; currency: string; programName?: string | null; supplierName?: string | null; effectiveStartDate?: string | null; effectiveEndDate?: string | null; tiers: RebateTierRule[]; exclusions: ExclusionRule[]; spaSkus: SpaSkuRule[]; spaClaimbackRules: SpaClaimbackRule[]; claimDeadlines: ClaimDeadlineRule[]; warnings: string[] };
 type LocatedLine = { text: string; pageNumber: number | null; clauseId: string | null };
 
 const MONEY = String.raw`(?:\$\s*)?\d[\d,]*(?:\.\d{1,2})?\s*(?:k|thousand|million|M)?`;
@@ -30,7 +31,7 @@ function splitPages(text: string): LocatedLine[] {
     const clause = line.match(/\b(?:clause|section|paragraph)\s+([\d]+(?:\.[\d]+)*)\b/i) ?? line.match(/^\s*(\d+(?:\.\d+)*)[.)]?\s+/);
     if (clause) clauseId = clause[1];
     const previous = lines.at(-1);
-    const isHeading = /^(?:\d+(?:\.\d+)*[.)]?\s|schedule\s+[a-z]|[A-Z]{1,5}[-/][A-Z0-9]{2,}\s*\|)/i.test(line);
+    const isHeading = /^(?:\d+(?:\.\d+)*[.)]?\s|schedule\s+[a-z]|[A-Z0-9]{1,12}[-/][A-Z0-9]{2,}(?:[-/][A-Z0-9]+)*\s*\|)/i.test(line);
     if (previous && previous.pageNumber === pageNumber && previous.clauseId === clauseId && !/[.!?]$/.test(previous.text) && !isHeading) previous.text += ` ${line}`;
     else lines.push({ text: line, pageNumber, clauseId });
   }
@@ -86,8 +87,10 @@ function parseExclusions(lines: LocatedLine[], source: string): ExclusionRule[] 
 }
 function parseSpaSkus(lines: LocatedLine[], source: string): SpaSkuRule[] {
   const contractors = new Set<string>();
-  for (const line of lines) if (/approved (?:mechanical )?contractors?|participating contractors?/i.test(line.text)) {
-    (line.text.split(/approved (?:mechanical )?contractors?\s*:?|participating contractors?\s*:?/i).pop() ?? "").split(/[,;|]|\band\b/i).map(x => x.trim().replace(/[.;]$/, "")).filter(Boolean).forEach(x => contractors.add(x));
+  for (const line of lines) {
+    const match = line.text.match(/(?:approved (?:mechanical )?contractors?|participating contractors?)\s*:\s*(.+?)(?=\s+and\s+(?:may|must|shall)\b|;|$)/i);
+    if (!match) continue;
+    match[1].split(/[,;|]|\band\b/i).map(x => x.trim().replace(/;$/, "")).filter(Boolean).forEach(x => contractors.add(x));
   }
   const out: SpaSkuRule[] = [];
   for (const line of lines) {
@@ -115,7 +118,10 @@ function parseSpaClaimbacks(lines: LocatedLine[], source: string): SpaClaimbackR
 }
 export function extractRulesFromText(text: string, sourceName = "supplier-document.pdf"): ExtractedSupplierRules {
   const lines = splitPages(text);
-  const rules: ExtractedSupplierRules = { schemaVersion: 1, source: sourceName, extractionMethod: "deterministic-regex", currency: /\b(?:USD|US dollars?)\b/i.test(text) || text.includes("$") ? "USD" : "UNSPECIFIED", tiers: parseTiers(lines, sourceName), exclusions: parseExclusions(lines, sourceName), spaSkus: parseSpaSkus(lines, sourceName), spaClaimbackRules: parseSpaClaimbacks(lines, sourceName), claimDeadlines: parseDeadlines(lines, sourceName), warnings: [] };
+  const period = text.match(/effective\s+(?:period|dates?)\s*:?\s*(\d{4}-\d{2}-\d{2})\s*(?:through|to|until|–|-)\s*(\d{4}-\d{2}-\d{2})/i);
+  const programName = text.match(/program\s*:\s*(.+?)(?=\s+supplier\s*:|\r?\n|$)/i)?.[1]?.trim() ?? null;
+  const supplierName = text.match(/supplier\s*:\s*(.+?)(?=\s+(?:effective|currency)\s*:|\r?\n|$)/i)?.[1]?.trim() ?? null;
+  const rules: ExtractedSupplierRules = { schemaVersion: 1, source: sourceName, extractionMethod: "deterministic-regex", currency: /\b(?:USD|US dollars?)\b/i.test(text) || text.includes("$") ? "USD" : "UNSPECIFIED", programName, supplierName, effectiveStartDate: period?.[1] ?? null, effectiveEndDate: period?.[2] ?? null, tiers: parseTiers(lines, sourceName), exclusions: parseExclusions(lines, sourceName), spaSkus: parseSpaSkus(lines, sourceName), spaClaimbackRules: parseSpaClaimbacks(lines, sourceName), claimDeadlines: parseDeadlines(lines, sourceName), warnings: [] };
   if (!rules.tiers.length) rules.warnings.push("No volume rebate tiers were confidently detected; verify the agreement manually.");
   if (rules.tiers.some(x => x.calculation === "unspecified")) rules.warnings.push("At least one tier does not state whether it is retroactive or incremental.");
   if (!rules.exclusions.length) rules.warnings.push("No explicit exclusion clauses were detected.");
@@ -154,7 +160,7 @@ export function mapClaudeCandidateRules(value: ClaudeRules, sourceName: string, 
   const regexRules = extractRulesFromText(text, sourceName);
   const normalizedRate = (rate: string) => rate.trim().replace(/\s*%$/, "");
   return {
-    schemaVersion: 1, source: sourceName, extractionMethod: "claude-structured", programName: value.programName, supplierName: value.supplierName,
+    schemaVersion: 1, source: sourceName, extractionMethod: "claude-structured", programName: value.programName ?? regexRules.programName ?? null, supplierName: value.supplierName ?? regexRules.supplierName ?? null, effectiveStartDate: regexRules.effectiveStartDate ?? null, effectiveEndDate: regexRules.effectiveEndDate ?? null,
     currency: /\b(?:USD|US dollars?)\b/i.test(text) || text.includes("$") ? "USD" : "UNSPECIFIED",
     tiers: (value.tiers ?? []).map(tier => {
       const ratePercent = normalizedRate(tier.rebateRate);
@@ -199,17 +205,51 @@ export async function extractRulesWithProvider(text: string, sourceName = "suppl
 function decodePdfText(value: string): string {
   try { return decodeURIComponent(value); } catch { return value; }
 }
+function extractUncompressedPdfText(buffer: Uint8Array): string {
+  const source = Buffer.from(buffer).toString("latin1");
+  if (/\/Encrypt\b/.test(source)) return "";
+  const streams = [...source.matchAll(/<<([\s\S]*?)>>\s*stream\r?\n([\s\S]*?)\r?\nendstream/g)];
+  if (!streams.length || streams.some(match => /\/Filter\b/.test(match[1]))) return "";
+  const unescape = (literal: string) => literal.replace(/\\([nrtbf()\\])|\\([0-7]{1,3})/g, (_match, named: string | undefined, octal: string | undefined) => {
+    if (octal) return String.fromCharCode(parseInt(octal, 8));
+    if (!named) return "";
+    return ({ n: "\n", r: "\r", t: "\t", b: "\b", f: "\f", "(": "(", ")": ")", "\\": "\\" } as Record<string, string>)[named] ?? "";
+  });
+  const text: string[] = [];
+  for (const [pageIndex, stream] of streams.entries()) {
+    text.push(`[[PAGE ${pageIndex + 1}]]`);
+    const literals = /\(((?:\\.|[^\\)])*)\)\s*Tj/g;
+    for (const match of stream[2].matchAll(literals)) text.push(unescape(match[1]));
+  }
+  return text.join("\n");
+}
 export async function extractRulesFromPdf(buffer: Buffer | Uint8Array, sourceName = "supplier-document.pdf", assistedExtractor?: AssistedRuleExtractor): Promise<ExtractedSupplierRules> {
   if (buffer.length === 0 || Buffer.from(buffer).subarray(0, 5).toString() !== "%PDF-") throw new Error("Unreadable PDF. Use Manual Contract Rule Entry.");
   const parser = new PDFParser(null, true, "");
   const text = await new Promise<string>((resolve, reject) => {
+    let settled = false;
     parser.on("pdfParser_dataError", (error) => {
       parser.destroy();
       const nestedError = (error as { parserError?: unknown }).parserError;
       const detail = nestedError instanceof Error ? nestedError.message : error instanceof Error ? error.message : String(nestedError ?? error);
-      reject(new Error(`Unreadable or unsupported PDF. Use Manual Contract Rule Entry. ${detail}`));
+      void PDFDocument.load(Buffer.from(buffer), { updateMetadata: false }).then(document => {
+        const fallbackText = extractUncompressedPdfText(buffer);
+        if (!settled && document.getPageCount() > 0 && fallbackText.trim().length >= 20) {
+          settled = true;
+          resolve(fallbackText);
+        } else if (!settled) {
+          settled = true;
+          reject(new Error(`Unreadable or unsupported PDF. Use Manual Contract Rule Entry. ${detail}`));
+        }
+      }).catch(() => {
+        if (!settled) {
+          settled = true;
+          reject(new Error(`Unreadable or unsupported PDF. Use Manual Contract Rule Entry. ${detail}`));
+        }
+      });
     });
     parser.on("pdfParser_dataReady", (data) => {
+      if (settled) return;
       const pages = data.Pages.map((page, index) => {
         const positioned = page.Texts.map((item) => ({ y: item.y, x: item.x, text: item.R.map((run) => decodePdfText(run.T)).join("") })).sort((a, b) => a.y - b.y || a.x - b.x);
         const rows: Array<{ y: number; items: typeof positioned }> = [];
@@ -221,6 +261,7 @@ export async function extractRulesFromPdf(buffer: Buffer | Uint8Array, sourceNam
         const pageText = rows.map((row) => row.items.map((item) => item.text).join(" ")).join("\n");
         return `[[PAGE ${index + 1}]]\n${pageText}`;
       });
+      settled = true;
       resolve(pages.join("\n"));
     });
     parser.parseBuffer(Buffer.from(buffer));

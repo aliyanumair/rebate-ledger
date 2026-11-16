@@ -9,6 +9,7 @@ export type Classification =
   | "EXCLUDED_FREIGHT_OR_TAX"
   | "EXCLUDED_RMA_RETURN"
   | "EXCLUDED_NON_QUALIFYING_SKU"
+  | "EXCLUDED_OUTSIDE_PROGRAM_PERIOD"
   | "UNMATCHED_SKU_NEEDS_REVIEW";
 
 export interface PurchaseTransaction {
@@ -60,6 +61,8 @@ export interface ReconciliationRules {
   nearMissThreshold?: number | string;
   claimDeadlineDays?: number;
   clauseCitations?: string[];
+  effectiveStartDate?: string;
+  effectiveEndDate?: string;
 }
 
 export interface SupplierPayment {
@@ -253,6 +256,8 @@ export function validateReconciliationRules(rules: ReconciliationRules): void {
   if (!rules || typeof rules !== "object" || !rules.supplierName?.trim() || !rules.programName?.trim()) throw new Error("Supplier and program are required.");
   if (rules.verification?.status !== "verified" || !rules.verification.verifiedBy?.trim() || !rules.verification.ruleVersion?.trim()) throw new Error("Reconciliation blocked: contract rules must be explicitly verified with reviewer and version.");
   if (!Array.isArray(rules.tiers) || rules.tiers.length === 0) throw new Error("At least one verified tier is required.");
+  for (const date of [rules.effectiveStartDate, rules.effectiveEndDate]) if (date && (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(date)) || new Date(date).toISOString().slice(0, 10) !== date)) throw new Error("Contract effective dates must be valid ISO calendar dates.");
+  if (rules.effectiveStartDate && rules.effectiveEndDate && rules.effectiveStartDate > rules.effectiveEndDate) throw new Error("Contract effective date range is invalid.");
   let mode: string | undefined;
   const thresholds = new Set<string>();
   for (const tier of rules.tiers) {
@@ -312,6 +317,9 @@ export function reconcile(
     } else if (excluded.has(sku) || (rules.excludedSkuPrefixes ?? []).some((p) => sku.startsWith(normalizeSku(p)))) {
       classification = "EXCLUDED_NON_QUALIFYING_SKU";
       notes = "SKU is listed as excluded by the program.";
+    } else if ((rules.effectiveStartDate && tx.date < rules.effectiveStartDate) || (rules.effectiveEndDate && tx.date > rules.effectiveEndDate)) {
+      classification = "EXCLUDED_OUTSIDE_PROGRAM_PERIOD";
+      notes = "Transaction date falls outside the verified contract period.";
     } else if (eligible.size > 0 && !eligible.has(sku) && !(spa && customerOk)) {
       classification = "UNMATCHED_SKU_NEEDS_REVIEW";
       notes = "SKU did not match an eligible SKU rule after normalization.";

@@ -50,7 +50,7 @@ export function parseCsvTable(text: string): { headers: string[]; rows: string[]
   return { headers, rows };
 }
 export function validateColumnMapping(mapping: Record<string, string>, headers: string[]): void {
-  for (const field of ["date", "sku", "qty", "extended_cost", "txn_type"]) {
+  for (const field of ["date", "vendor_name", "sku", "qty", "extended_cost", "txn_type"]) {
     if (!mapping[field] || !headers.includes(mapping[field])) throw new Error(`Map the required ${field.replaceAll("_", " ")} column.`);
   }
   if (new Set(Object.values(mapping).filter(Boolean)).size !== Object.values(mapping).filter(Boolean).length) throw new Error("Each CSV column must map to only one field.");

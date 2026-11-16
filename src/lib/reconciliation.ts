@@ -6,6 +6,8 @@ export type Classification =
   | "ELIGIBLE_VERIFIED"
   | "UNDERPAID_TIER_MISMATCH"
   | "UNCLAIMED_SPA_ELIGIBLE"
+  | "EXCLUDED_OTHER_SUPPLIER"
+  | "UNMATCHED_SUPPLIER_NEEDS_REVIEW"
   | "EXCLUDED_FREIGHT_OR_TAX"
   | "EXCLUDED_RMA_RETURN"
   | "EXCLUDED_NON_QUALIFYING_SKU"
@@ -54,6 +56,8 @@ export interface ReconciliationRules {
   opportunityMethod?: "incremental-total-rebate" | "rate-difference-at-target";
   tiers: RebateTier[];
   eligibleSkus?: string[];
+  /** Set only after a reviewer verifies that every SKU from this supplier qualifies. */
+  allSupplierSkusEligible?: boolean;
   excludedSkus?: string[];
   excludedSkuPrefixes?: string[];
   freightAndTaxTerms?: string[];
@@ -172,6 +176,10 @@ export function normalizeSku(value: string): string {
   return value.normalize("NFKC").toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
+function normalizeSupplier(value: string): string {
+  return value.normalize("NFKC").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
 function normalizedSet(values: string[] = []): Set<string> {
   return new Set(values.map(normalizeSku).filter(Boolean));
 }
@@ -256,6 +264,8 @@ export function validateReconciliationRules(rules: ReconciliationRules): void {
   if (!rules || typeof rules !== "object" || !rules.supplierName?.trim() || !rules.programName?.trim()) throw new Error("Supplier and program are required.");
   if (rules.verification?.status !== "verified" || !rules.verification.verifiedBy?.trim() || !rules.verification.ruleVersion?.trim()) throw new Error("Reconciliation blocked: contract rules must be explicitly verified with reviewer and version.");
   if (!Array.isArray(rules.tiers) || rules.tiers.length === 0) throw new Error("At least one verified tier is required.");
+  if ((!Array.isArray(rules.eligibleSkus) || rules.eligibleSkus.every(sku => !normalizeSku(sku))) && rules.allSupplierSkusEligible !== true) throw new Error("Reconciliation blocked: verify eligible SKUs or explicitly confirm that all SKUs from this supplier qualify.");
+  if (rules.allSupplierSkusEligible === true && (rules.eligibleSkus ?? []).some(sku => normalizeSku(sku))) throw new Error("Choose either an eligible SKU list or the all-supplier-SKUs scope, not both.");
   for (const date of [rules.effectiveStartDate, rules.effectiveEndDate]) if (date && (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(date)) || new Date(date).toISOString().slice(0, 10) !== date)) throw new Error("Contract effective dates must be valid ISO calendar dates.");
   if (rules.effectiveStartDate && rules.effectiveEndDate && rules.effectiveStartDate > rules.effectiveEndDate) throw new Error("Contract effective date range is invalid.");
   let mode: string | undefined;
@@ -308,7 +318,15 @@ export function reconcile(
     let classification: Classification;
     let net = new Decimal(0);
     let notes = "";
-    if (qty.lt(0) || /\bRMA\b|\bRETURN\b|\bCREDIT\b/i.test(`${tx.txnType ?? ""} ${tx.description}`)) {
+    const vendor = normalizeSupplier(tx.vendorName);
+    const contractSupplier = normalizeSupplier(rules.supplierName);
+    if (!vendor) {
+      classification = "UNMATCHED_SUPPLIER_NEEDS_REVIEW";
+      notes = "Vendor name is missing; this row is excluded until its supplier is verified.";
+    } else if (vendor !== contractSupplier) {
+      classification = "EXCLUDED_OTHER_SUPPLIER";
+      notes = `Vendor ${tx.vendorName} does not match the verified contract supplier ${rules.supplierName}.`;
+    } else if (qty.lt(0) || /\bRMA\b|\bRETURN\b|\bCREDIT\b/i.test(`${tx.txnType ?? ""} ${tx.description}`)) {
       classification = "EXCLUDED_RMA_RETURN";
       notes = "Return or credit transaction excluded from qualifying spend.";
     } else if (containsTerm(tx, rules.freightAndTaxTerms ?? ["freight", "shipping", "tax", "delivery"])) {
@@ -323,6 +341,9 @@ export function reconcile(
     } else if (eligible.size > 0 && !eligible.has(sku) && !(spa && customerOk)) {
       classification = "UNMATCHED_SKU_NEEDS_REVIEW";
       notes = "SKU did not match an eligible SKU rule after normalization.";
+    } else if (eligible.size === 0 && rules.allSupplierSkusEligible !== true && !(spa && customerOk)) {
+      classification = "UNMATCHED_SKU_NEEDS_REVIEW";
+      notes = "No verified eligible SKU scope includes this SKU; reviewer confirmation is required.";
     } else if (rawSpend.lt(0)) {
       classification = "EXCLUDED_RMA_RETURN";
       notes = "Negative extended amount excluded from qualifying spend.";
@@ -330,9 +351,9 @@ export function reconcile(
       classification = "ELIGIBLE_VERIFIED";
       net = rawSpend;
     }
-    if (classification === "ELIGIBLE_VERIFIED" && spa && customerOk && spa.stackWithVolumeRebate !== true) {
+    if (classification === "ELIGIBLE_VERIFIED" && spa && spa.stackWithVolumeRebate !== true) {
       net = new Decimal(0);
-      notes = "Verified SPA benefit is non-stackable with the volume rebate; this line is excluded from volume-tier spend.";
+      notes = "This SPA SKU is non-stackable with volume rebates; it is excluded from volume-tier spend regardless of customer approval. SPA earnings still require an approved customer.";
     }
     const standard = spa?.standardPrice === undefined ? asDecimal(tx.unitCost) : asDecimal(spa.standardPrice);
     const spaEarned = spa && customerOk && classification === "ELIGIBLE_VERIFIED"

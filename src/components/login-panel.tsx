@@ -1,8 +1,8 @@
 "use client";
 import {FormEvent,useState} from 'react';
 import {useRouter} from 'next/navigation';
-export function LoginPanel() {
-  const router=useRouter(); const [message,setMessage]=useState('');const [busy,setBusy]=useState(false);
+export function LoginPanel({initialError=''}: {initialError?:string}) {
+  const router=useRouter(); const [message,setMessage]=useState(initialError);const [busy,setBusy]=useState(false);
   async function submit(e:FormEvent<HTMLFormElement>) {
     e.preventDefault();if(busy)return;setBusy(true);setMessage('');const data=new FormData(e.currentTarget);
     try {
@@ -13,5 +13,5 @@ export function LoginPanel() {
       router.push('/dashboard');router.refresh();
     }catch(error){setMessage(error instanceof Error?error.message:'Could not sign in.');}finally{setBusy(false);}
   }
-  return <section className="login-card"><div className="eyebrow">CONTROLLER WORKSPACE</div><h2>Sign in to your workspace</h2><p>Use the credentials supplied with your audit invitation. Demo credentials are shared privately.</p><form onSubmit={submit}><label>Email address<input required name="email" type="email" autoComplete="username"/></label><label>Password<input required name="password" type="password" autoComplete="current-password"/></label>{message&&<p role="alert" className="form-error">{message}</p>}<button disabled={busy} className="button button-primary submit-wide" type="submit">{busy?'Signing in…':'Sign in →'}</button></form><p className="form-note">The demo controller workspace uses synthetic data. The admin queue contains private submissions and is restricted to authorized reviewers.</p></section>;
+  return <section className="login-card"><div className="eyebrow">CONTROLLER WORKSPACE</div><h2>Sign in to your workspace</h2><p>Use the credentials supplied with your audit invitation. Demo credentials are shared privately.</p><form action="/api/auth/login" method="post" onSubmit={submit}><label>Email address<input required name="email" type="email" autoComplete="username"/></label><label>Password<input required name="password" type="password" autoComplete="current-password"/></label>{message&&<p role="alert" className="form-error">{message}</p>}<button disabled={busy} className="button button-primary submit-wide" type="submit">{busy?'Signing in…':'Sign in →'}</button></form><p className="form-note">The demo controller workspace uses synthetic data. The admin queue contains private submissions and is restricted to authorized reviewers.</p></section>;
 }

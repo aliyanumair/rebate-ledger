@@ -14,9 +14,10 @@ export async function loadBenchmarkAudit() {
       extendedCost: row.line_amount, txnType: row.line_type };
   });
   const rules: ReconciliationRules = {
-    supplierName: "Northstar Climate Systems (synthetic)", programName: "Q3 2026 Core Equipment Rebate — synthetic demo",
+    supplierName: "Northstar Climate Systems", programName: "Q3 2026 Core Equipment Rebate — synthetic demo",
     verification: { status: "verified", verifiedBy: "Synthetic fixture review", ruleVersion: "NCS-DEMO-2026-Q3-014-v1" },
     tiers: [{ minSpend: "0", ratePercent: "2", mode: "retroactive", citation: "01_supplier_agreement_demo.pdf, Clause 2" }, { minSpend: "400400", ratePercent: "3", mode: "retroactive", citation: "01_supplier_agreement_demo.pdf, Clause 2" }],
+    allSupplierSkusEligible: true,
     freightAndTaxTerms: ["freight", "shipping", "tax"], nearMissThreshold: "15000", opportunityMethod: "rate-difference-at-target",
     clauseCitations: ["Agreement NCS-DEMO-2026-Q3-014, Clause 1 — eligibility and freight/tax/returns exclusions", "Clause 2 — 2% base, 3% retroactive at $400,400; $4,004 separate benchmark rate-difference opportunity", "Clause 3 — claim and payment"],
   };

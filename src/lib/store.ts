@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { getStore } from '@netlify/blobs';
 import type { ReconciliationResult } from './reconciliation';
@@ -41,4 +41,29 @@ export async function getAudit(id:string):Promise<AuditRecord|null> {
   if(cloud()) return blobs().get(`audits/${id}`,{type:'json'});
   try { return JSON.parse(await readFile(path.join(dataDir(),'audits',`${id}.json`),'utf8')) as AuditRecord; }
   catch(e) { if((e as NodeJS.ErrnoException).code==='ENOENT') return null; throw e; }
+}
+export async function listAudits(ownerEmail?:string):Promise<AuditRecord[]> {
+  let records:AuditRecord[];
+  if(cloud()) {
+    const store=blobs(); const {blobs:items}=await store.list({prefix:'audits/'});
+    const values=await Promise.all(items.map(item=>store.get(item.key,{type:'json'}) as Promise<AuditRecord|null>));
+    records=values.filter((value):value is AuditRecord=>Boolean(value));
+  } else {
+    try {
+      const names=await readdir(path.join(dataDir(),'audits'));
+      records=await Promise.all(names.filter(name=>name.endsWith('.json')).map(async name=>JSON.parse(await readFile(path.join(dataDir(),'audits',name),'utf8')) as AuditRecord));
+    } catch(error) { if((error as NodeJS.ErrnoException).code==='ENOENT') records=[]; else throw error; }
+  }
+  return records.filter(record=>!ownerEmail || record.ownerEmail.toLowerCase()===ownerEmail.toLowerCase()).sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+}
+export async function deleteAudit(id:string):Promise<void> {
+  if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) throw new Error('Invalid audit ID.');
+  if(cloud()) {
+    const store=blobs();
+    await Promise.all([store.delete(`uploads/${id}/pdf`),store.delete(`uploads/${id}/csv`)]);
+    await store.delete(`audits/${id}`);
+    return;
+  }
+  await rm(path.join(dataDir(),'uploads',id),{recursive:true,force:true});
+  await rm(path.join(dataDir(),'audits',`${id}.json`),{force:true});
 }

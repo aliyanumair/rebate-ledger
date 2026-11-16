@@ -57,7 +57,7 @@ async function main() {
     return {
       txnId: column(row, 'txn_id') || `CSV-LINE-${index + 2}`,
       invoiceId: column(row, 'invoice_id') || undefined,
-      date: column(row, 'date'), vendorName: column(row, 'vendor_name') || 'Trane Commercial',
+      date: column(row, 'date'), vendorName: column(row, 'vendor_name'),
       sku: column(row, 'sku'), description: column(row, 'description'), qty: parseCsvDecimal(column(row, 'qty'), 'quantity'),
       unitCost: column(row, 'unit_cost') ? parseCsvDecimal(column(row, 'unit_cost'), 'unit cost') : extendedCost,
       extendedCost, customerName: column(row, 'customer_name') || undefined, txnType: column(row, 'txn_type'),
@@ -68,7 +68,11 @@ async function main() {
 
   const credits = parseCsvTable(await readFile(path.join(dir, 'supplier_credit_memo_q3_2026.csv'), 'utf8'));
   const creditColumn = (row: string[], name: string) => row[credits.headers.indexOf(name)] ?? '';
-  const payments: SupplierPayment[] = credits.rows.map(row => ({ scope: 'program', amount: parseCsvDecimal(creditColumn(row, 'Paid_Credit'), 'credit memo paid amount'), reference: creditColumn(row, 'Credit_ID') }));
+  const creditsById = new Map(credits.rows.map(row => [creditColumn(row, 'Credit_ID'), row]));
+  const traneCredit = creditsById.get('CM-TRANE-Q3');
+  const wattsCredit = creditsById.get('CM-WATTS-Q3');
+  assert.ok(traneCredit && wattsCredit, 'separate Trane and Watts statements are required');
+  const payments: SupplierPayment[] = [{ scope: 'program', amount: parseCsvDecimal(creditColumn(traneCredit, 'Paid_Credit'), 'Trane credit amount'), reference: creditColumn(traneCredit, 'Credit_ID') }];
   const rules: ReconciliationRules = {
     supplierName: extracted.supplierName ?? 'Trane Commercial', programName: extracted.programName ?? 'Q3 2026 Commercial Volume Rebate',
     verification: { status: 'verified', verifiedBy: 'nightmare-fixture-independent-source-review', ruleVersion: 'q3-2026-fixture-v1' },
@@ -76,18 +80,27 @@ async function main() {
     tiers: extracted.tiers.map(tier => ({ minSpend: tier.minimumSpend, ratePercent: tier.ratePercent, mode: tier.calculation as 'retroactive' | 'incremental', citation: tier.citation.clauseId ? `Clause ${tier.citation.clauseId}` : 'Tier schedule' })),
     eligibleSkus: ['TRN-COM-100'], excludedSkuPrefixes: ['TRN-ACC-'],
     freightAndTaxTerms: ['freight', 'fuel surcharge', 'sales tax', 'pallet'],
-    spas: spaExtracted.spaSkus.map(item => ({ sku: item.sku, standardPrice: item.standardCost!, supportedPrice: item.supportedPrice!, approvedCustomers: item.approvedContractors, stackWithVolumeRebate: false, citation: `Clause 6.1; ${item.citation.excerpt}` })),
     nearMissThreshold: '5000.00', clauseCitations: ['Clause 4.3', 'Clause 6.1'],
   };
   const result = reconcile(transactions, rules, payments);
+  const wattsRules: ReconciliationRules = {
+    ...rules, supplierName: spaExtracted.supplierName ?? 'Watts Plumbing', programName: spaExtracted.programName ?? 'Q3 2026 Contractor Special Pricing Agreement',
+    effectiveStartDate: undefined, effectiveEndDate: undefined, eligibleSkus: spaExtracted.spaSkus.map(item => item.sku), excludedSkuPrefixes: [], excludedSkus: [],
+    tiers: [{ minSpend: '0.00', ratePercent: '0', mode: 'retroactive', citation: 'Watts SPA-only, no volume tier' }],
+    spas: spaExtracted.spaSkus.map(item => ({ sku: item.sku, standardPrice: item.standardCost!, supportedPrice: item.supportedPrice!, approvedCustomers: item.approvedContractors, stackWithVolumeRebate: false, citation: `Clause 6.1; ${item.citation.excerpt}` })),
+  };
+  const wattsTransactions = transactions.filter(transaction => transaction.vendorName === 'Watts Plumbing');
+  const wattsResult = reconcile(wattsTransactions, wattsRules, [{ scope: 'program', amount: parseCsvDecimal(creditColumn(wattsCredit, 'Paid_Credit'), 'Watts credit amount'), reference: creditColumn(wattsCredit, 'Credit_ID') }]);
   const actual = {
     eligibleVolumeSpend: result.totals.netEligibleSpend, volumeRebateEarned: result.totals.rebateEarned,
     spaEarned: result.totals.spaEarned, totalEarned: money(result.totals.rebateEarned).plus(result.totals.spaEarned).toFixed(2),
     totalPaid: result.totals.supplierPaid, totalRecovery: result.totals.unclaimedRecoveryFound,
   };
-  for (const [key, value] of Object.entries(actual)) assert.equal(value, truth.expected[key], `ground truth mismatch for ${key}`);
+  assert.deepEqual(actual, { eligibleVolumeSpend: '264000.00', volumeRebateEarned: '9900.00', spaEarned: '0.00', totalEarned: '9900.00', totalPaid: '5940.00', totalRecovery: '3960.00' }, 'Trane-only production path must isolate supplier and verified volume SKUs');
+  const actualWatts = { spaEarned: wattsResult.totals.spaEarned, totalPaid: wattsResult.totals.supplierPaid, totalRecovery: wattsResult.totals.unclaimedRecoveryFound };
+  assert.deepEqual(actualWatts, { spaEarned: truth.expected.spaEarned, totalPaid: truth.expected.spaPaid, totalRecovery: truth.expected.spaRecovery }, 'Watts SPA is reconciled independently under its own supplier agreement');
   const sumPaidVolume = payments[0].amount;
-  const sumPaidSpa = payments[1].amount;
+  const sumPaidSpa = creditColumn(wattsCredit, 'Paid_Credit').replace(/[,$"]/g, '');
   assert.equal(sumPaidVolume, truth.expected.volumePaid);
   assert.equal(sumPaidSpa, truth.expected.spaPaid);
   assert.equal(money(truth.expected.volumeRebateEarned).minus(sumPaidVolume).toFixed(2), truth.expected.volumeRecovery);
@@ -99,10 +112,11 @@ async function main() {
   assert.equal(result.lines.filter(line => line.classification === 'EXCLUDED_NON_QUALIFYING_SKU').reduce((total, line) => total.plus(line.grossSpend), new Decimal(0)).toFixed(2), '16200.00');
   assert.equal(result.lines.filter(line => line.classification === 'EXCLUDED_OUTSIDE_PROGRAM_PERIOD').reduce((total, line) => total.plus(line.grossSpend), new Decimal(0)).toFixed(2), '31000.00');
   assert.equal(result.lines.filter(line => line.sku.startsWith('MYSTERY-') && line.classification === 'UNMATCHED_SKU_NEEDS_REVIEW').reduce((total, line) => total.plus(line.grossSpend), new Decimal(0)).toFixed(2), '12500.00');
-  assert.equal(result.lines.filter(line => line.spaEarned === '240.00').length, 15);
-  assert.equal(result.lines.filter(line => line.sku.startsWith('WTS-') && line.spaEarned === '0.00').length, 8);
+  assert.equal(result.lines.filter(line => line.classification === 'EXCLUDED_OTHER_SUPPLIER').reduce((total, line) => total.plus(line.grossSpend), new Decimal(0)).toFixed(2), '22080.00');
+  assert.equal(wattsResult.lines.filter(line => line.spaEarned === '240.00').length, 15);
+  assert.equal(wattsResult.lines.filter(line => line.sku.startsWith('WTS-') && line.spaEarned === '0.00').length, 8);
   assert.equal(result.totals.quarterEndTierOpportunity, '0.00', 'there is no higher tier; opportunities cannot inflate earned rebate');
-  assert.equal(result.totals.unclaimedRecoveryFound, '6120.00');
+  assert.equal(result.totals.unclaimedRecoveryFound, '3960.00');
   assert.equal(result.totals.transactionCount, 2024);
   assert.equal(result.totals.exceptionCount, result.lines.filter(line => line.classification !== 'ELIGIBLE_VERIFIED').length);
 
@@ -114,9 +128,9 @@ async function main() {
   const summary = workbook.getWorksheet('Executive Summary')!;
   assert.equal(new Decimal(String(summary.getCell(6, 2).result)).toFixed(2), '264000.00');
   assert.equal(new Decimal(String(summary.getCell(7, 2).result)).toFixed(2), '9900.00');
-  assert.equal(new Decimal(String(summary.getCell(8, 2).result)).toFixed(2), '3600.00');
-  assert.equal(new Decimal(String(summary.getCell(9, 2).result)).toFixed(2), '7380.00');
-  assert.equal(new Decimal(String(summary.getCell(10, 2).result)).toFixed(2), '6120.00');
+  assert.equal(new Decimal(String(summary.getCell(8, 2).result)).toFixed(2), '0.00');
+  assert.equal(new Decimal(String(summary.getCell(9, 2).result)).toFixed(2), '5940.00');
+  assert.equal(new Decimal(String(summary.getCell(10, 2).result)).toFixed(2), '3960.00');
   const exportDir = path.join(process.cwd(), '.artifacts', 'nightmare');
   await mkdir(exportDir, { recursive: true });
   await writeFile(path.join(exportDir, 'nightmare_audit.xlsx'), workbookBytes);
@@ -124,7 +138,7 @@ async function main() {
   await reopened.xlsx.readFile(path.join(exportDir, 'nightmare_audit.xlsx'));
   assert.equal(reopened.worksheets.length, 4);
 
-  const disputeBytes = await createDisputePdf(result, 'CM-TRANE-Q3; CM-WATTS-Q3');
+  const disputeBytes = await createDisputePdf(result, 'CM-TRANE-Q3');
   const disputeDoc = await PDFDocument.load(disputeBytes);
   assert.equal(disputeDoc.getPageCount(), 1);
   assert.equal(disputeDoc.getTitle(), 'MarginsRecovery Rebate Claim - Trane Commercial');
@@ -132,7 +146,10 @@ async function main() {
   const reopenedPdf = await PDFDocument.load(await readFile(path.join(exportDir, 'nightmare_dispute.pdf')));
   assert.equal(reopenedPdf.getPageCount(), 1);
 
-  console.log(JSON.stringify({ verdict: 'PASS', sourceFiles: ['3-page Trane contract PDF', '3-page Watts SPA PDF', '2,024-row messy ERP CSV', 'supplier credit memo CSV'], extractedTierCount: extracted.tiers.length, extractedSpaSkuCount: spaExtracted.spaSkus.length, transactionCount: result.totals.transactionCount, actual, exceptions: { freightTaxPallet: '19400.00', rma: '-22850.00', excludedSku: '16200.00', outsideWindow: '31000.00', unknownSku: '12500.00' }, spaApprovedUnits: 15, spaUnapprovedUnits: 8, workbookTabs: workbook.worksheets.map(sheet => sheet.name), disputePdfPages: disputeDoc.getPageCount(), exactVariance: '0.00' }, null, 2));
+  assert.equal(money(actual.totalEarned).plus(wattsResult.totals.spaEarned).toFixed(2), truth.expected.totalEarned);
+  assert.equal(money(actual.totalPaid).plus(wattsResult.totals.supplierPaid).toFixed(2), truth.expected.totalPaid);
+  assert.equal(money(actual.totalRecovery).plus(wattsResult.totals.unclaimedRecoveryFound).toFixed(2), truth.expected.totalRecovery);
+  console.log(JSON.stringify({ verdict: 'PASS', sourceFiles: ['3-page Trane contract PDF', '3-page Watts SPA PDF', '2,024-row messy ERP CSV', 'supplier credit memo CSV'], extractedTierCount: extracted.tiers.length, extractedSpaSkuCount: spaExtracted.spaSkus.length, transactionCount: result.totals.transactionCount, trane: actual, wattsSpa: actualWatts, exceptions: { freightTaxPallet: '19400.00', rma: '-22850.00', excludedSku: '16200.00', outsideWindow: '31000.00', unknownSku: '12500.00', otherSupplier: '22080.00' }, spaApprovedUnits: 15, spaUnapprovedUnits: 8, workbookTabs: workbook.worksheets.map(sheet => sheet.name), disputePdfPages: disputeDoc.getPageCount(), exactVariance: '0.00' }, null, 2));
 }
 
 void main().catch(error => { console.error(error); process.exitCode = 1; });

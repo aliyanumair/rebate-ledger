@@ -46,7 +46,7 @@ export async function POST(request: Request) {
       const extendedCost = parseCsvDecimal(column(row, 'extended_cost'), 'extended cost');
       const unitCost = column(row, 'unit_cost') ? parseCsvDecimal(column(row, 'unit_cost'), 'unit cost') : extendedCost;
       return {
-        txnId, invoiceId, date: column(row, 'date').trim(), vendorName: column(row, 'vendor_name').trim() || supplier,
+        txnId, invoiceId, date: column(row, 'date').trim(), vendorName: column(row, 'vendor_name').trim(),
         sku: column(row, 'sku').trim(), description: column(row, 'description').trim(), qty, unitCost,
         extendedCost, customerName: column(row, 'customer_name').trim() || undefined,
         projectCode: column(row, 'project_code').trim() || undefined, txnType: column(row, 'txn_type').trim(),

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import ExcelJS from 'exceljs';
@@ -37,7 +37,17 @@ try {
   for (const route of ['/', '/login']) {
     const response = await status(route);
     assert.equal(response.status, 200, `${route} should return HTTP 200`);
+    if (route === '/login') {
+      const html = await response.text();
+      assert.match(html, /<form[^>]+action="\/api\/auth\/login"[^>]+method="post"/i, 'login form must submit with POST before React hydrates');
+    }
   }
+
+  const nativeLogin = await fetch(`${base}/api/auth/login`, { method:'POST', headers:{'content-type':'application/x-www-form-urlencoded'}, body:new URLSearchParams({email:demoEmail,password:'Demo1234!'}), redirect:'manual' });
+  assert.equal(nativeLogin.status, 303, 'native pre-hydration login must redirect after POST');
+  assert.equal(new URL(nativeLogin.headers.get('location'), base).pathname, '/dashboard');
+  assert.equal(new URL(nativeLogin.headers.get('location'), base).search, '', 'login credentials must never be reflected in a redirect URL');
+  assert.ok(nativeLogin.headers.get('set-cookie')?.includes('rebate_session='));
 
   const adminLogin = await fetch(`${base}/api/auth/login`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
@@ -58,6 +68,7 @@ try {
   assert.equal(sameOriginLogin.status, 200, 'same-origin browser login should not be rejected behind the Next server');
   assert.equal((await fetch(`${base}/api/auth/logout`, {method:'POST',headers:{Origin:'https://attacker.example',Cookie:controllerCookie}})).status, 403, 'cross-origin logout mutation should be rejected');
   assert.equal((await status('/api/audits', controllerCookie)).status, 403, 'intake queue must be admin-only');
+  assert.equal((await status('/api/audits/mine')).status, 401, 'audit index must require a session');
 
   const sampleDir = path.join(root, 'data/benchmark/sample_set_1');
   const contract = readFileSync(path.join(sampleDir, 'carrier_hvac_2026_rebate_agreement.pdf'));
@@ -102,9 +113,9 @@ try {
   const reconciliation = new FormData();
   reconciliation.set('supplier', 'Synthetic HVAC');
   reconciliation.set('rules', JSON.stringify({ supplierName:'Synthetic HVAC', programName:'One-line test', verification:{status:'verified',verifiedBy:'Smoke reviewer',ruleVersion:'test-v1'}, opportunityMethod:'rate-difference-at-target', nearMissThreshold:'150', tiers:[{minSpend:'0',ratePercent:'2',mode:'retroactive',citation:'Clause 2'},{minSpend:'200',ratePercent:'4',mode:'retroactive',citation:'Clause 2'}], eligibleSkus:['K-1'], clauseCitations:['Clause 2'] }));
-  reconciliation.set('mapping', JSON.stringify({ date:'Date', sku:'Part_No', qty:'Qty', extended_cost:'Ext_Amt', customer_name:'Cust_ID', txn_type:'Txn Type', invoice_id:'Invoice' }));
+  reconciliation.set('mapping', JSON.stringify({ date:'Date', vendor_name:'Manufacturer', sku:'Part_No', qty:'Qty', extended_cost:'Ext_Amt', customer_name:'Cust_ID', txn_type:'Txn Type', invoice_id:'Invoice' }));
   reconciliation.set('payments', JSON.stringify([{ scope:'program', amount:'1.00', reference:'synthetic credit statement' }]));
-  reconciliation.set('csv', new Blob(['Date,Part_No,Qty,Ext_Amt,Cust_ID,Txn Type,Invoice\n2026-07-01,K-1,1,100.00,ACME,PURCHASE,INV-SYN-01'], {type:'text/csv'}), 'synthetic.csv');
+  reconciliation.set('csv', new Blob(['Date,Manufacturer,Part_No,Qty,Ext_Amt,Cust_ID,Txn Type,Invoice\n2026-07-01,Synthetic HVAC,K-1,1,100.00,ACME,PURCHASE,INV-SYN-01'], {type:'text/csv'}), 'synthetic.csv');
   const calculated = await fetch(`${base}/api/reconcile`, {method:'POST',body:reconciliation,headers:{Cookie:controllerCookie}});
   assert.equal(calculated.status, 200);
   const created = await calculated.json();
@@ -125,6 +136,9 @@ try {
   assert.equal(storedAdmin.status, 200, JSON.stringify({controller:storedBody,admin:await storedAdmin.json()}));
   assert.equal(stored.status, 200, JSON.stringify(storedBody));
   assert.equal(storedBody.result.totals.unclaimedRecoveryFound, '1.00');
+  const myAuditsResponse = await status('/api/audits/mine', controllerCookie);
+  assert.equal(myAuditsResponse.status, 200);
+  assert.ok((await myAuditsResponse.json()).audits.some(item => item.id === created.auditId));
   const calculatedWorkbook = await status(`/api/audits/${created.auditId}/exports/xlsx`, controllerCookie);
   assert.equal(calculatedWorkbook.status, 200);
   const actualWorkbook = new ExcelJS.Workbook();
@@ -133,12 +147,22 @@ try {
   const calculatedPdf = await status(`/api/audits/${created.auditId}/exports/dispute`, controllerCookie);
   assert.equal(calculatedPdf.status, 200);
   assert.equal((await PDFDocument.load(await calculatedPdf.arrayBuffer())).getPageCount(), 1);
+  assert.equal((await fetch(`${base}/api/audits/${created.auditId}`, {method:'DELETE'})).status, 401, 'unauthenticated users cannot delete audits');
+  assert.equal((await fetch(`${base}/api/audits/demo-q3`, {method:'DELETE',headers:{Cookie:controllerCookie}})).status, 404, 'seeded demo audit cannot be deleted');
+  const auditRecordPath = path.join(dataDir, 'audits', `${created.auditId}.json`);
+  const originalRecord = readFileSync(auditRecordPath, 'utf8');
+  const changedOwner = JSON.parse(originalRecord); changedOwner.ownerEmail = 'another-controller@example.test'; writeFileSync(auditRecordPath, JSON.stringify(changedOwner));
+  assert.equal((await fetch(`${base}/api/audits/${created.auditId}`, {method:'DELETE',headers:{Cookie:controllerCookie}})).status, 404, 'controllers cannot delete another owner’s audit');
+  writeFileSync(auditRecordPath, originalRecord);
+  assert.equal((await fetch(`${base}/api/audits/${created.auditId}`, {method:'DELETE',headers:{Cookie:controllerCookie}})).status, 200, 'audit owner can remove an audit');
+  assert.equal(existsSync(path.join(dataDir, 'uploads', created.auditId)), false, 'audit source uploads are deleted with the record');
+  assert.equal((await status(`/api/audits/${created.auditId}`, controllerCookie)).status, 404, 'deleted audit is no longer readable');
   const unverified = new FormData();
   for (const [key,value] of reconciliation.entries()) unverified.set(key,value);
   unverified.set('rules', JSON.stringify({ supplierName:'Synthetic HVAC', programName:'Unverified', verification:{status:'unverified',verifiedBy:'',ruleVersion:'test-v1'}, tiers:[{minSpend:'0',ratePercent:'2',mode:'retroactive',citation:'Clause 2'}] }));
   assert.equal((await fetch(`${base}/api/reconcile`, {method:'POST',body:unverified,headers:{Cookie:controllerCookie}})).status, 422);
 
-  console.log('HTTP smoke checks passed: public routes, auth/role checks, PDF extraction, intake storage, deterministic upload reconciliation, owner readback, unverified-rule blocking, and both exports.');
+  console.log('HTTP smoke checks passed: progressive POST login, auth/role checks, owner-scoped audit listing/deletion, source-file cleanup, PDF extraction, intake storage, deterministic upload reconciliation, unverified-rule blocking, and both exports.');
 } finally {
   if (server.exitCode === null) {
     const exited = new Promise((resolve) => server.once('exit', resolve));

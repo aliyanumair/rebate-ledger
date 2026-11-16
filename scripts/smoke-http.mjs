@@ -14,7 +14,7 @@ const demoEmail = 'controller@smoke.example';
 const dataDir = mkdtempSync(path.join(os.tmpdir(), 'rebate-ledger-http-'));
 const server = spawn(process.execPath, [path.join(root, 'node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '--port', String(port)], {
   cwd: root,
-  env: { ...process.env, SESSION_SECRET:'smoke-only-secret-at-least-32-characters', DEMO_EMAIL:demoEmail, DEMO_PASSWORD:'Demo1234!', ADMIN_EMAIL:adminEmail, ADMIN_PASSWORD:'Admin1234!', REBATE_DATA_DIR: dataDir },
+  env: { ...process.env, SESSION_SECRET:'smoke-only-secret-at-least-32-characters', DEMO_EMAIL:demoEmail, DEMO_PASSWORD:'Demo1234!', ADMIN_EMAIL:adminEmail, ADMIN_PASSWORD:'Admin1234!', DEMO_LOGIN_ENABLED:'true', REBATE_DATA_DIR: dataDir },
   stdio: 'ignore',
 });
 
@@ -40,8 +40,25 @@ try {
     if (route === '/login') {
       const html = await response.text();
       assert.match(html, /<form[^>]+action="\/api\/auth\/login"[^>]+method="post"/i, 'login form must submit with POST before React hydrates');
+      assert.match(html, /Continue as demo controller/i, 'enabled one-click controller demo must be visible');
     }
   }
+
+  const demoOpenA = await fetch(`${base}/api/auth/demo`, { method:'POST' });
+  const demoOpenBodyA = await demoOpenA.json();
+  assert.equal(demoOpenA.status, 200, 'demo login should open a controller session when enabled');
+  assert.equal(demoOpenBodyA.role, 'controller', 'demo login must never grant admin role');
+  assert.match(demoOpenBodyA.email, /^demo-[0-9a-f-]+@anonymous\.invalid$/i, 'demo session must use a random isolated owner identity');
+  const demoCookieA = demoOpenA.headers.get('set-cookie')?.split(';')[0];
+  assert.ok(demoCookieA, 'demo login should issue an HttpOnly session cookie');
+  const demoOpenB = await fetch(`${base}/api/auth/demo`, { method:'POST' });
+  const demoOpenBodyB = await demoOpenB.json();
+  assert.equal(demoOpenB.status, 200);
+  assert.notEqual(demoOpenBodyA.email, demoOpenBodyB.email, 'each demo session must have a unique audit owner');
+  assert.equal((await status('/api/audits', demoCookieA)).status, 403, 'one-click demo controller cannot access admin queue');
+  assert.equal((await status('/api/audits/mine', demoCookieA)).status, 200, 'one-click demo controller can access only its own audit list');
+  const crossOriginDemo = await fetch(`${base}/api/auth/demo`, { method:'POST', headers:{Origin:'https://attacker.example'} });
+  assert.equal(crossOriginDemo.status, 403, 'cross-origin demo session creation must be rejected');
 
   const nativeLogin = await fetch(`${base}/api/auth/login`, { method:'POST', headers:{'content-type':'application/x-www-form-urlencoded'}, body:new URLSearchParams({email:demoEmail,password:'Demo1234!'}), redirect:'manual' });
   assert.equal(nativeLogin.status, 303, 'native pre-hydration login must redirect after POST');

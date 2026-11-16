@@ -9,7 +9,7 @@ export function LoginPanel() {
       const email=String(data.get('email')).trim().toLowerCase();
       const response=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password:String(data.get('password'))})});
       const result=await response.json();if(!response.ok)throw new Error(result.error||'Could not sign in.');
-      localStorage.setItem('rebateledger:session',JSON.stringify({email:result.email,name:result.role==='admin'?'RebateLedger Admin':'Demo Controller',role:result.role==='admin'?'Admin':'Controller',company:'RebateLedger'}));
+      localStorage.setItem('rebateledger:session',JSON.stringify({email:result.email,name:result.role==='admin'?'MarginsRecovery Admin':'Demo Controller',role:result.role==='admin'?'Admin':'Controller',company:'MarginsRecovery'}));
       router.push('/dashboard');router.refresh();
     }catch(error){setMessage(error instanceof Error?error.message:'Could not sign in.');}finally{setBusy(false);}
   }

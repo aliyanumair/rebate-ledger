@@ -12,7 +12,7 @@
     "test:routes": "node scripts/smoke-http.mjs",
     "test:e2e:live": "playwright test --config=playwright.live.config.ts",
     "generate:benchmark": "python3 data/benchmark/sample_set_1/generate_benchmark.py",
-    "test": "npm run test:reconciliation && tsx scripts/verify-launch-math.ts && tsx scripts/verify-export-fidelity.ts"
+    "test": "npm run test:reconciliation && tsx scripts/verify-launch-math.ts && tsx scripts/verify-export-fidelity.ts && tsx scripts/verify-extractor-provider.ts"
   },
   "dependencies": {
     "@netlify/blobs": "^11.1.9",

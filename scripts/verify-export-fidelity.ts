@@ -18,6 +18,8 @@ async function main() {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(bytes as unknown as Parameters<typeof workbook.xlsx.load>[0]);
   assert.equal(workbook.worksheets.length, 4);
+  assert.equal(workbook.creator, 'MarginsRecovery');
+  assert.equal(workbook.title, `MarginsRecovery | ${result.programName} Audit Workbook`);
   const summary = workbook.getWorksheet('Executive Summary')!;
   const audit = workbook.getWorksheet('Full Transaction Audit Trail')!;
   const totals = [result.totals.grossSpend, result.totals.netEligibleSpend, result.totals.rebateEarned, result.totals.spaEarned, result.totals.supplierPaid, result.totals.unclaimedRecoveryFound];
@@ -40,10 +42,14 @@ async function main() {
   assert.equal(summary.getCell(4, 2).result, result.lines.length);
   for (const sheet of workbook.worksheets) {
     assert.equal(sheet.views[0].state, 'frozen');
+    assert.equal(sheet.headerFooter.oddHeader, '&BMarginsRecovery');
     assert.ok(sheet.columns.every((column) => column.width && column.width >= 12 && column.width <= 56));
   }
   const pdfBytes = await createDisputePdf(result, 'BENCHMARK-FIDELITY');
-  assert.equal((await PDFDocument.load(pdfBytes)).getPageCount(), 1);
+  const disputeDocument = await PDFDocument.load(pdfBytes);
+  assert.equal(disputeDocument.getPageCount(), 1);
+  assert.equal(disputeDocument.getTitle(), `MarginsRecovery Rebate Claim - ${result.supplierName}`);
+  assert.equal(disputeDocument.getAuthor(), 'MarginsRecovery');
   const parser = new PDFParser(null, true, '');
   const text = await new Promise<string>((resolve, reject) => {
     parser.on('pdfParser_dataError', (error) => reject((error as { parserError?: Error }).parserError ?? error));
@@ -51,6 +57,7 @@ async function main() {
     parser.parseBuffer(pdfBytes);
   }).finally(() => parser.destroy());
   assert.match(text, /NET RECOVERY REQUESTED/);
+  assert.match(text, /MarginsRecovery/);
   for (const value of [result.totals.unclaimedRecoveryFound, result.totals.rebateEarned, result.totals.supplierPaid, result.totals.quarterEndTierOpportunity]) assert.ok(text.includes(`$${value}`));
   assert.match(text, /Aggregate statement reconciliation only/);
   assert.match(text, /not allocated to individual invoices/);

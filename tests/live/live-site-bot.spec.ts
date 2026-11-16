@@ -30,12 +30,19 @@ test("live demo upload extracts contract rules and reconciles the synthetic benc
 
   const contractPath = path.join(process.cwd(), "data/benchmark/launch_sprint/01_supplier_agreement_demo.pdf");
   const purchasePath = path.join(process.cwd(), "data/benchmark/launch_sprint/02_erp_purchase_export_demo.csv");
+  const extractionResponsePromise = page.waitForResponse(response => response.url().includes("/api/extract") && response.request().method() === "POST");
   await page.getByLabel("Upload supplier audit files").setInputFiles([contractPath, purchasePath]);
+  const extractionResponse = await extractionResponsePromise;
+  expect(extractionResponse.headers()["content-type"]).toContain("application/json");
+  expect(extractionResponse.status()).toBe(200);
+  const extractionPayload = await extractionResponse.json();
+  expect(extractionPayload.rules.programName || extractionPayload.rules.source).toBeTruthy();
+  expect(extractionPayload.rules.tiers).toHaveLength(2);
   await expect(page.getByLabel("Tier 2 rebate rate")).toHaveValue("3");
   await expect(page.getByLabel("Tier 1 rebate rate")).toHaveValue("2");
   await expect(page.locator("textarea")).toHaveCount(0);
 
-  await page.getByLabel("Supplier name").fill("RebateLedger Live Bot Synthetic Supplier");
+  await page.getByLabel("Supplier name").fill("MarginsRecovery Live Bot Synthetic Supplier");
   await page.getByLabel("Verified by").fill("Automated live-site health bot");
   await page.getByLabel("Supplier credits received").fill("7246.00");
   await page.getByRole("button", { name: "Lock verified rules" }).click();

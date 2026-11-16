@@ -11,7 +11,7 @@ const REQUIRED_CSV_FIELDS = ["date", "sku", "qty", "extended_cost", "txn_type"];
 const MANUAL_START = { rate: "", mode: "retroactive", clause: "", program: "", minimumSpend: "0", excludedTerms: "freight,shipping,tax,return,credit", opportunityMethod: "rate-difference-at-target", nearMissThreshold: "15000" };
 const formatMoney = (value: string) => { const [whole, cents] = value.split("."); return `$${whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",")}.${cents ?? "00"}`; };
 function asCandidate(extracted: ExtractedSupplierRules, supplier: string): ReconciliationRules {
-  return { supplierName: supplier.trim(), programName: extracted.source, verification: { status: "unverified", verifiedBy: "", ruleVersion: "1" }, opportunityMethod: "rate-difference-at-target", nearMissThreshold: "15000",
+  return { supplierName: supplier.trim() || extracted.supplierName?.trim() || "", programName: extracted.programName?.trim() || extracted.source, verification: { status: "unverified", verifiedBy: "", ruleVersion: "1" }, opportunityMethod: "rate-difference-at-target", nearMissThreshold: "15000",
     tiers: extracted.tiers.map(tier => ({ minSpend: tier.minimumSpend, ratePercent: tier.ratePercent, mode: tier.calculation === "unspecified" ? undefined : tier.calculation, citation: `${tier.citation.source}, page ${tier.citation.pageNumber ?? "?"}, Clause ${tier.citation.clauseId ?? "?"}` })),
     excludedSkus: extracted.exclusions.filter(rule => rule.category === "sku").flatMap(rule => rule.values), freightAndTaxTerms: extracted.exclusions.filter(rule => rule.category === "freight" || rule.category === "tax").flatMap(rule => rule.category === "freight" ? ["freight", "shipping"] : ["tax"]),
     clauseCitations: extracted.tiers.map(tier => `${tier.citation.source}, Clause ${tier.citation.clauseId ?? "?"}`) };
@@ -65,9 +65,12 @@ export function UploadWorkspace() {
       setPdfUrl(URL.createObjectURL(pdf)); setRuleLocked(false); setExtracting(true); setExtractError("");
       const request = new FormData(); request.set("pdf", pdf);
       try {
-        const response = await fetch("/api/extract", { method: "POST", body: request }); const data = await response.json();
+        const response = await fetch("/api/extract", { method: "POST", body: request });
+        const contentType = response.headers.get("content-type") || "";
+        const data = contentType.includes("application/json") ? await response.json() : null;
+        if (!data) throw new Error(`PDF extraction service returned an unexpected response (HTTP ${response.status}). Use Manual Contract Rule Entry or retry later.`);
         if (!response.ok) throw new Error(data.error || "Could not extract contract rules.");
-        const candidate = asCandidate(data.rules, supplier); setRuleDraft(candidate); setManual(data.rules.tiers.length === 0);
+        const candidate = asCandidate(data.rules, supplier); setRuleDraft(candidate); if (!supplier.trim() && candidate.supplierName) setSupplier(candidate.supplierName); setManual(data.rules.tiers.length === 0);
         if (!data.rules.tiers.length) setExtractError("No reliable tiers found. Enter the contract rule manually.");
       } catch (error) { setExtractError(error instanceof Error ? error.message : "Unreadable PDF."); setRuleDraft(null); setManual(true); }
       finally { setExtracting(false); }

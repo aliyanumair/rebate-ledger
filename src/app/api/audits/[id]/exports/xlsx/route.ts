@@ -20,7 +20,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   const workbook = await generateAuditWorkbook(result);
   return new NextResponse(new Uint8Array(workbook), { headers: {
     'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    'Content-Disposition': `attachment; filename="rebate-ledger-${id}-audit.xlsx"`,
+    'Content-Disposition': `attachment; filename="margins-recovery-${id}-audit.xlsx"`,
     'Cache-Control': 'no-store',
   } });
 }

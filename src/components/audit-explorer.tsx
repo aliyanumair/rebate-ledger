@@ -20,7 +20,7 @@ export function AuditExplorer({ auditId }: { auditId: string }) {
   const hasAggregatePayment = result?.totals.programStatementProvided ?? false;
   const opportunity = result?.opportunities[0];
   if (loadError) return <div className="dashboard-page audit-page"><div className="crumb-back"><Link href="/dashboard">← Back to audits</Link></div><section className="panel error-panel"><h2>Audit unavailable</h2><p>{loadError}</p><Link className="button button-primary" href="/login">Sign in again</Link></section></div>;
-  if (!result || !audit) return <div className="loading-shell"><span className="brand-mark">R</span><span>Loading verified audit results…</span></div>;
+  if (!result || !audit) return <div className="loading-shell"><span className="brand-mark">M</span><span>Loading verified audit results…</span></div>;
   const auditDates = result.lines.map(line => line.date).sort();
   const periodLabel = auditId === "demo-q3" ? "July 1 – September 30, 2026" : auditDates.length ? `${auditDates[0]} – ${auditDates[auditDates.length - 1]}` : "No transaction dates";
   const categories = ["All lines", "UNDERPAID_TIER_MISMATCH", "ELIGIBLE_VERIFIED", "EXCLUDED_FREIGHT_OR_TAX", "EXCLUDED_RMA_RETURN"];

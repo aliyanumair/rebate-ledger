@@ -1,4 +1,4 @@
-# RebateLedger Outreach Playbook
+# MarginsRecovery Outreach Playbook
 
 ## ICP and list building
 

@@ -8,11 +8,11 @@ const fmt = (v: string): number => Number(v || 0);
 export async function createAuditWorkbook(result: ReconciliationResult): Promise<Buffer> {
   const workbook = new ExcelJS.Workbook();
   workbook.calcProperties.fullCalcOnLoad = true;
-  workbook.creator = "Rebate Ledger";
+  workbook.creator = "MarginsRecovery";
   workbook.created = new Date("2026-01-01T00:00:00.000Z");
   workbook.modified = workbook.created;
   workbook.subject = `Rebate reconciliation: ${result.supplierName}`;
-  workbook.title = `${result.programName} Audit Workbook`;
+  workbook.title = `MarginsRecovery | ${result.programName} Audit Workbook`;
   workbook.views = [{ x: 0, y: 0, width: 16000, height: 9000, firstSheet: 0, activeTab: 0, visibility: "visible" }];
 
   const navy = "16324F";
@@ -145,6 +145,7 @@ export async function createAuditWorkbook(result: ReconciliationResult): Promise
   summary.addRow(["Workbook use", "Detail cells are snapshot inputs; summary formulas recalculate when details change. Re-run the verified audit for contractual calculations."]);
   summary.addRow(["Opportunity treatment", "Hypothetical tier uplift only; excluded from earned and recovery totals."]);
   workbook.eachSheet((sheet) => {
+    sheet.headerFooter.oddHeader = "&BMarginsRecovery";
     sheet.eachRow((row, index) => {
       if (index > 1) row.eachCell((cell) => {
         cell.font = { name: "Arial", size: 10, color: { argb: "FF16324F" } };
@@ -168,8 +169,9 @@ export async function createAuditWorkbook(result: ReconciliationResult): Promise
 /** Width-based wrapping keeps long supplier names, invoice IDs and clauses inside the page. */
 export async function createDisputePdf(result: ReconciliationResult, claimReference = "REBATE-CLAIM"): Promise<Buffer> {
   const pdf = await PDFDocument.create();
-  pdf.setTitle(`Rebate claim - ${result.supplierName}`);
-  pdf.setAuthor("Rebate Ledger");
+  pdf.setTitle(`MarginsRecovery Rebate Claim - ${result.supplierName}`);
+  pdf.setAuthor("MarginsRecovery");
+  pdf.setCreator("MarginsRecovery");
   const page = pdf.addPage([612, 792]);
   const regular = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
@@ -230,7 +232,7 @@ export async function createDisputePdf(result: ReconciliationResult, claimRefere
   draw("Please confirm receipt, identify any disputed invoice or clause, and issue the supported credit. This letter and workbook remain subject to original-document review before submission.", 9, false, 3);
   draw("Accounts Payable / Rebate Audit", 9, true, 1);
   page.drawLine({ start: { x: 52, y: 47 }, end: { x: 560, y: 47 }, thickness: 0.5, color: rgb(0.75, 0.8, 0.84) });
-  page.drawText("Rebate Ledger | Contract rules + deterministic transaction reconciliation | Supporting workbook required", { x: 52, y: 33, size: 7, font: regular, color: rgb(0.4, 0.45, 0.5) });
+  page.drawText("MarginsRecovery | Contract rules + deterministic transaction reconciliation | Supporting workbook required", { x: 52, y: 33, size: 7, font: regular, color: rgb(0.4, 0.45, 0.5) });
   return Buffer.from(await pdf.save());
 }
 

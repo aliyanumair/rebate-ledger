@@ -1,4 +1,4 @@
-# Rebate Ledger
+# MarginsRecovery
 
 A local-first rebate reconciliation workspace for HVAC and plumbing distributors. It turns supplier program documents and ERP purchases into a reviewable, exact-decimal audit, with downloadable Excel and dispute-letter exports.
 

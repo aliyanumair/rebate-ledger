@@ -20,7 +20,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   const pdf = await generateDisputePdf(result);
   return new NextResponse(new Uint8Array(pdf), { headers: {
     'Content-Type': 'application/pdf',
-    'Content-Disposition': `attachment; filename="rebate-ledger-${id}-dispute.pdf"`,
+    'Content-Disposition': `attachment; filename="margins-recovery-${id}-dispute.pdf"`,
     'Cache-Control': 'no-store',
   } });
 }

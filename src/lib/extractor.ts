@@ -8,7 +8,7 @@ export type ExclusionRule = { category: "sku" | "freight" | "tax" | "other"; val
 export type SpaSkuRule = { sku: string; standardCost: string | null; supportedPrice: string | null; approvedContractors: string[]; citation: RuleCitation };
 export type SpaClaimbackRule = { description: string; citation: RuleCitation };
 export type ClaimDeadlineRule = { days: number; trigger: string; citation: RuleCitation };
-export type ExtractedSupplierRules = { schemaVersion: 1; source: string; extractionMethod: "deterministic-regex"; currency: string; tiers: RebateTierRule[]; exclusions: ExclusionRule[]; spaSkus: SpaSkuRule[]; spaClaimbackRules: SpaClaimbackRule[]; claimDeadlines: ClaimDeadlineRule[]; warnings: string[] };
+export type ExtractedSupplierRules = { schemaVersion: 1; source: string; extractionMethod: "deterministic-regex" | "claude-structured"; currency: string; programName?: string | null; supplierName?: string | null; tiers: RebateTierRule[]; exclusions: ExclusionRule[]; spaSkus: SpaSkuRule[]; spaClaimbackRules: SpaClaimbackRule[]; claimDeadlines: ClaimDeadlineRule[]; warnings: string[] };
 type LocatedLine = { text: string; pageNumber: number | null; clauseId: string | null };
 
 const MONEY = String.raw`(?:\$\s*)?\d[\d,]*(?:\.\d{1,2})?\s*(?:k|thousand|million|M)?`;
@@ -123,8 +123,79 @@ export function extractRulesFromText(text: string, sourceName = "supplier-docume
   return rules;
 }
 
-/** Optional, explicit seam for a future assisted extractor. API keys alone never cause a network request. */
+/** Optional callback seam for deterministic extraction tests and deployments that inject a provider. */
 export type AssistedRuleExtractor = (text: string, sourceName: string) => Promise<ExtractedSupplierRules>;
+const CLAUDE_RULES_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["programName", "supplierName", "tiers", "spaItems", "exclusions", "sourceCitations"],
+  properties: {
+    programName: { type: ["string", "null"] },
+    supplierName: { type: ["string", "null"] },
+    tiers: { type: "array", items: { type: "object", additionalProperties: false, required: ["minSpend", "maxSpend", "rebateRate", "retroactive", "citationIndex"], properties: { minSpend: { type: "string" }, maxSpend: { type: ["string", "null"] }, rebateRate: { type: "string" }, retroactive: { type: ["boolean", "null"] }, citationIndex: { type: "integer" } } } },
+    spaItems: { type: "array", items: { type: "object", additionalProperties: false, required: ["sku", "standardCost", "supportedPrice", "approvedContractors", "citationIndex"], properties: { sku: { type: "string" }, standardCost: { type: ["string", "null"] }, supportedPrice: { type: ["string", "null"] }, approvedContractors: { type: "array", items: { type: "string" } }, citationIndex: { type: "integer" } } } },
+    exclusions: { type: "array", items: { type: "object", additionalProperties: false, required: ["category", "values", "description", "citationIndex"], properties: { category: { type: "string", enum: ["sku", "freight", "tax", "other"] }, values: { type: "array", items: { type: "string" } }, description: { type: "string" }, citationIndex: { type: "integer" } } } },
+    sourceCitations: { type: "array", items: { type: "object", additionalProperties: false, required: ["pageNumber", "clauseId", "excerpt"], properties: { pageNumber: { type: ["integer", "null"] }, clauseId: { type: ["string", "null"] }, excerpt: { type: "string" } } } },
+  },
+} as const;
+export type ClaudeRules = {
+  programName: string | null; supplierName: string | null;
+  tiers: Array<{ minSpend: string; maxSpend: string | null; rebateRate: string; retroactive: boolean | null; citationIndex: number }>;
+  spaItems: Array<{ sku: string; standardCost: string | null; supportedPrice: string | null; approvedContractors: string[]; citationIndex: number }>;
+  exclusions: Array<{ category: ExclusionRule["category"]; values: string[]; description: string; citationIndex: number }>;
+  sourceCitations: Array<{ pageNumber: number | null; clauseId: string | null; excerpt: string }>;
+};
+function citationAt(citations: ClaudeRules["sourceCitations"], index: number, source: string): RuleCitation {
+  const citation = Number.isInteger(index) && index >= 0 ? citations[index] : undefined;
+  return { source, pageNumber: citation?.pageNumber ?? null, clauseId: citation?.clauseId ?? null, excerpt: citation?.excerpt?.slice(0, 500) ?? "" };
+}
+export function mapClaudeCandidateRules(value: ClaudeRules, sourceName: string, text: string): ExtractedSupplierRules {
+  const citations = Array.isArray(value.sourceCitations) ? value.sourceCitations : [];
+  const regexRules = extractRulesFromText(text, sourceName);
+  const normalizedRate = (rate: string) => rate.trim().replace(/\s*%$/, "");
+  return {
+    schemaVersion: 1, source: sourceName, extractionMethod: "claude-structured", programName: value.programName, supplierName: value.supplierName,
+    currency: /\b(?:USD|US dollars?)\b/i.test(text) || text.includes("$") ? "USD" : "UNSPECIFIED",
+    tiers: (value.tiers ?? []).map(tier => {
+      const ratePercent = normalizedRate(tier.rebateRate);
+      const deterministic = regexRules.tiers.find(candidate => candidate.minimumSpend === tier.minSpend && normalizedRate(candidate.ratePercent) === ratePercent);
+      // Never spread one tier's contract language across every tier. Keep an
+      // ambiguous candidate unresolved unless its own deterministic source line
+      // establishes the calculation method.
+      const calculation = tier.retroactive === true ? "retroactive" : tier.retroactive === false ? "incremental" : deterministic?.calculation ?? "unspecified";
+      return { minimumSpend: tier.minSpend, maximumSpend: tier.maxSpend, ratePercent, calculation, citation: citationAt(citations, tier.citationIndex, sourceName) };
+    }),
+    exclusions: (value.exclusions ?? []).map(rule => ({ category: rule.category, values: rule.values, description: rule.description, citation: citationAt(citations, rule.citationIndex, sourceName) })),
+    spaSkus: (value.spaItems ?? []).map(item => ({ sku: item.sku, standardCost: item.standardCost, supportedPrice: item.supportedPrice, approvedContractors: item.approvedContractors, citation: citationAt(citations, item.citationIndex, sourceName) })),
+    spaClaimbackRules: [], claimDeadlines: [], warnings: ["Claude extracted candidate contract terms. A reviewer must verify every applicable rule before reconciliation.", ...(value.programName ? [] : ["Program name not found in the contract."]), ...(value.supplierName ? [] : ["Supplier name not found in the contract."])],
+  };
+}
+async function extractRulesWithClaude(text: string, sourceName: string): Promise<ExtractedSupplierRules> {
+  const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+  if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not configured.");
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST", signal: AbortSignal.timeout(8_000),
+    headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+    body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 4096, output_config: { format: { type: "json_schema", schema: CLAUDE_RULES_SCHEMA } }, messages: [{ role: "user", content: `Extract only explicit candidate terms from the supplied contract text. Never calculate rebates or infer missing terms. Use exact decimal strings for amounts and rates. For unclear or absent values, use null, empty arrays, or retroactive=null. Each source citation must quote a short exact excerpt, and every rule must reference its citation by zero-based citationIndex. Do not treat tier opportunities as earned amounts. Source: ${sourceName}\n\n<contract_text>\n${text.slice(0, 100_000)}\n</contract_text>` }] }),
+  });
+  if (!response.ok) throw new Error(`Anthropic extraction returned HTTP ${response.status}.`);
+  const payload = await response.json() as { content?: Array<{ type?: string; text?: string }> };
+  const raw = payload.content?.find(block => block.type === "text")?.text;
+  if (!raw) throw new Error("Anthropic returned no structured contract data.");
+  const rules = JSON.parse(raw) as ClaudeRules;
+  return mapClaudeCandidateRules(rules, sourceName, text);
+}
+export async function extractRulesWithProvider(text: string, sourceName = "supplier-document.pdf"): Promise<ExtractedSupplierRules> {
+  if (process.env.ANTHROPIC_API_KEY?.trim()) {
+    try { return await extractRulesWithClaude(text, sourceName); }
+    catch (error) {
+      const fallback = extractRulesFromText(text, sourceName);
+      fallback.warnings.push(`Claude extraction was unavailable; deterministic extraction was used. ${error instanceof Error ? error.message : "Unknown extractor error."}`);
+      return fallback;
+    }
+  }
+  return extractRulesFromText(text, sourceName);
+}
 function decodePdfText(value: string): string {
   try { return decodeURIComponent(value); } catch { return value; }
 }
@@ -155,5 +226,6 @@ export async function extractRulesFromPdf(buffer: Buffer | Uint8Array, sourceNam
     parser.parseBuffer(Buffer.from(buffer));
   }).finally(() => parser.destroy());
   if (text.replace(/\[\[PAGE \d+\]\]/g, "").trim().length < 20) throw new Error("Scanned or unreadable PDF. Use Manual Contract Rule Entry and verify against the source.");
-  return assistedExtractor ? assistedExtractor(text, sourceName) : extractRulesFromText(text, sourceName);
+  if (assistedExtractor) return assistedExtractor(text, sourceName);
+  return extractRulesWithProvider(text, sourceName);
 }
